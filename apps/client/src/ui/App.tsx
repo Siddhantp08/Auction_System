@@ -3,11 +3,14 @@ import { createClient } from '@supabase/supabase-js'
 
 // Configuration
 const API_URL = import.meta.env.VITE_API_BASE || ''
-const WS_URL = import.meta.env.VITE_WS_URL || 'ws://localhost:8080'
+const WS_URL = import.meta.env.VITE_WS_URL || (
+  typeof window !== 'undefined'
+    ? `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}`
+    : 'ws://localhost:8080'
+)
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL
 const SUPABASE_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY
-
-const supabase = SUPABASE_URL && SUPABASE_KEY 
+const initialSupabase = SUPABASE_URL && SUPABASE_KEY
   ? createClient(SUPABASE_URL, SUPABASE_KEY)
   : null
 
@@ -344,6 +347,25 @@ export function App() {
   const [showCreateForm, setShowCreateForm] = useState(false)
   const [loading, setLoading] = useState(true)
   const wsRef = useRef<WebSocket | null>(null)
+  const [sb, setSb] = useState<typeof initialSupabase>(initialSupabase)
+
+  // Initialize Supabase from server config if not provided at build-time
+  useEffect(() => {
+    if (sb) return
+    const loadConfig = async () => {
+      try {
+        const res = await fetch(`${API_URL}/config`)
+        if (!res.ok) return
+        const cfg = await res.json()
+        if (cfg?.supabaseUrl && cfg?.supabaseAnonKey) {
+          setSb(createClient(cfg.supabaseUrl, cfg.supabaseAnonKey))
+        }
+      } catch {
+        // ignore
+      }
+    }
+    loadConfig()
+  }, [sb])
 
   // API functions
   const apiCall = async (
@@ -356,7 +378,7 @@ export function App() {
     }
 
     if (user) {
-      const session = await supabase?.auth.getSession()
+      const session = await sb?.auth.getSession()
       if (session?.data.session?.access_token) {
         headers['Authorization'] = `Bearer ${session.data.session.access_token}`
       }
@@ -386,18 +408,18 @@ export function App() {
 
   // Authentication
   const handleAuth = async (email: string, password: string, isSignUp: boolean) => {
-    if (!supabase) {
+  if (!sb) {
       alert('Authentication not configured')
       return
     }
 
     try {
       if (isSignUp) {
-        const { error } = await supabase.auth.signUp({ email, password })
+  const { error } = await sb.auth.signUp({ email, password })
         if (error) throw error
         alert('Check your email for verification link')
       } else {
-        const { error } = await supabase.auth.signInWithPassword({ email, password })
+  const { error } = await sb.auth.signInWithPassword({ email, password })
         if (error) throw error
       }
     } catch (error: any) {
@@ -406,8 +428,8 @@ export function App() {
   }
 
   const handleSignOut = async () => {
-    if (supabase) {
-      await supabase.auth.signOut()
+    if (sb) {
+      await sb.auth.signOut()
     }
     setUser(null)
     setShowAuth(false)
@@ -464,19 +486,19 @@ export function App() {
 
   // Supabase auth listener
   useEffect(() => {
-    if (!supabase) {
+    if (!sb) {
       setLoading(false)
       return
     }
 
-    supabase.auth.getSession().then(({ data: { session } }) => {
+    sb.auth.getSession().then(({ data: { session } }) => {
       if (session?.user) {
         setUser({ id: session.user.id, email: session.user.email || '' })
       }
       setLoading(false)
     })
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+    const { data: { subscription } } = sb.auth.onAuthStateChange((_event, session) => {
       if (session?.user) {
         setUser({ id: session.user.id, email: session.user.email || '' })
         setShowAuth(false)
@@ -486,7 +508,7 @@ export function App() {
     })
 
     return () => subscription.unsubscribe()
-  }, [])
+  }, [sb])
 
   // Load auctions on mount
   useEffect(() => {
