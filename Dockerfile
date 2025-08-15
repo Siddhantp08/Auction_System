@@ -6,13 +6,13 @@ COPY package.json package-lock.json* .npmrc* ./
 COPY apps/server/package.json apps/server/package.json
 COPY apps/client/package.json apps/client/package.json
 COPY packages/shared/package.json packages/shared/package.json
-RUN npm install && npm -w apps/server install redis@^4
+RUN npm install
 # Copy sources
 COPY . .
 # Build all workspaces
 RUN npm run build
 # Prepare client assets at /app/apps/client-dist
-RUN mkdir -p /app/apps/client-dist && cp -r apps/client/dist/* /app/apps/client-dist/
+RUN mkdir -p /app/apps/client-dist && if [ -d apps/client/dist ]; then cp -r apps/client/dist/* /app/apps/client-dist/; fi
 
 FROM node:20-alpine AS runner
 ENV NODE_ENV=production

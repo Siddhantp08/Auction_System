@@ -1,20 +1,23 @@
-import sgMail from '@sendgrid/mail'
-
 const SENDGRID_API_KEY = process.env.SENDGRID_API_KEY
 const FROM = process.env.SENDGRID_FROM_EMAIL
 
 export async function sendEmail(to: string, subject: string, text: string, options?: { html?: string; attachments?: { filename: string; content: string; type?: string }[] }) {
   if (!SENDGRID_API_KEY || !FROM) return { skipped: true }
-  sgMail.setApiKey(SENDGRID_API_KEY)
-  await sgMail.send({
-    to,
-    from: FROM,
-    subject,
-    text,
-    html: options?.html,
-    attachments: options?.attachments
-  })
-  return { ok: true }
+  try {
+    const sgMail: any = (await import('@sendgrid/mail')).default
+    sgMail.setApiKey(SENDGRID_API_KEY)
+    await sgMail.send({
+      to,
+      from: FROM,
+      subject,
+      text,
+      html: options?.html,
+      attachments: options?.attachments
+    })
+    return { ok: true }
+  } catch {
+    return { skipped: true }
+  }
 }
 
 export function buildInvoiceHtml(details: { auctionTitle: string; amount: number; buyerEmail: string; sellerEmail: string; auctionId: string }) {

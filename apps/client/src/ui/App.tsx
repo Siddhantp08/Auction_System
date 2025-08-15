@@ -346,10 +346,13 @@ export function App() {
   const wsRef = useRef<WebSocket | null>(null)
 
   // API functions
-  const apiCall = async (endpoint: string, options?: RequestInit) => {
+  const apiCall = async (
+    endpoint: string,
+    options?: Omit<RequestInit, 'headers'> & { headers?: Record<string, string> }
+  ) => {
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
-      ...options?.headers
+      ...(options?.headers ?? {})
     }
 
     if (user) {

@@ -1,5 +1,4 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js'
-import { Redis } from '@upstash/redis'
 import { nanoid } from 'nanoid'
 
 export type Auction = {
@@ -60,10 +59,19 @@ class MemoryStore implements IStore {
   }
 }
 
+type RedisApi = {
+  hgetall<T = Record<string, string>>(key: string): Promise<T | null>
+  hset(key: string, value: Record<string, any>): Promise<any>
+  sadd?(key: string, ...members: string[]): Promise<any>
+  smembers?(key: string): Promise<string[]>
+  del?(key: string): Promise<any>
+  set(key: string, value: string, opts?: { nx?: boolean; ex?: number }): Promise<any>
+}
+
 class RedisStore implements IStore {
-  constructor(private redis: Redis) {}
+  constructor(private redis: RedisApi) {}
   async listAuctions(): Promise<Auction[]> {
-  const ids: string[] = (await this.redis.smembers('auctions:index') as any) || []
+  const ids: string[] = (await (this.redis.smembers ? this.redis.smembers('auctions:index') : Promise.resolve([])) as any) || []
     const items: Auction[] = []
     for (const id of ids) {
   const r = await this.redis.hgetall(`auction:${id}`) as Record<string, string> | null
@@ -90,7 +98,7 @@ class RedisStore implements IStore {
       createdAt: now.toISOString(),
     }
     await this.redis.hset(`auction:${auction.id}`, auction as any)
-    await this.redis.sadd('auctions:index', auction.id)
+  if (this.redis.sadd) await this.redis.sadd('auctions:index', auction.id)
     return auction
   }
   async getAuction(id: string): Promise<Auction | null> {
@@ -117,7 +125,7 @@ class RedisStore implements IStore {
       await this.redis.hset(key, { currentPrice: amount })
       return { ok: true as const }
     } finally {
-      await this.redis.del(lockKey)
+  if (this.redis.del) await this.redis.del(lockKey)
     }
   }
 }
@@ -214,8 +222,22 @@ export function createStore(): IStore {
   const UPSTASH_URL = process.env.UPSTASH_REDIS_REST_URL
   const UPSTASH_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN
   if (UPSTASH_URL && UPSTASH_TOKEN) {
-    const redis = new Redis({ url: UPSTASH_URL, token: UPSTASH_TOKEN })
-    return new RedisStore(redis)
+    // Lazy load to avoid hard dependency during build/runtime when not configured
+    const RedisCtor: any = (global as any).__UPSTASH__ || null
+    if (RedisCtor) {
+      const redis = new RedisCtor({ url: UPSTASH_URL, token: UPSTASH_TOKEN })
+      return new RedisStore(redis)
+    }
+    // Dynamic import at runtime
+    try {
+      // Note: this import is only executed when Upstash env is provided
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const mod = require('@upstash/redis') as any
+      const redis = new mod.Redis({ url: UPSTASH_URL, token: UPSTASH_TOKEN })
+      return new RedisStore(redis)
+    } catch {
+      // fallthrough to memory store
+    }
   }
 
   return new MemoryStore()

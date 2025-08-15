@@ -43,7 +43,7 @@ try {
     app.log.info('Static files enabled')
   }
 } catch (error) {
-  app.log.warn('Static files setup failed:', error)
+  app.log.warn(`Static files setup failed: ${String((error as any)?.message || error)}`)
 }
 
 // Types and schemas
@@ -83,7 +83,7 @@ function broadcastMessage(message: any) {
   if (!wss) return
   
   const messageStr = JSON.stringify(message)
-  wss.clients.forEach(client => {
+  wss.clients.forEach((client: any) => {
     if (client.readyState === 1) { // WebSocket.OPEN
       client.send(messageStr)
     }
@@ -103,7 +103,7 @@ app.get('/config', async () => {
 })
 
 // Get all auctions
-app.get('/api/auctions', async (request, reply) => {
+app.get('/api/auctions', async (request: any, reply: any) => {
   if (!supabase) {
     return reply.code(500).send({ error: 'Database not configured' })
   }
@@ -117,14 +117,14 @@ app.get('/api/auctions', async (request, reply) => {
     if (error) throw error
 
     return { items: data || [] }
-  } catch (error) {
-    app.log.error('Failed to fetch auctions:', error)
+  } catch (error: any) {
+    app.log.error(`Failed to fetch auctions: ${String((error as any)?.message || error)}`)
     return reply.code(500).send({ error: 'Failed to fetch auctions' })
   }
 })
 
 // Get single auction
-app.get('/api/auctions/:id', async (request, reply) => {
+app.get('/api/auctions/:id', async (request: any, reply: any) => {
   if (!supabase) {
     return reply.code(500).send({ error: 'Database not configured' })
   }
@@ -143,14 +143,14 @@ app.get('/api/auctions/:id', async (request, reply) => {
     }
 
     return data
-  } catch (error) {
-    app.log.error('Failed to fetch auction:', error)
+  } catch (error: any) {
+    app.log.error(`Failed to fetch auction: ${String((error as any)?.message || error)}`)
     return reply.code(500).send({ error: 'Failed to fetch auction' })
   }
 })
 
 // Create auction
-app.post('/api/auctions', async (request, reply) => {
+app.post('/api/auctions', async (request: any, reply: any) => {
   const userId = await getUserFromRequest(request)
   if (!userId) {
     return reply.code(401).send({ error: 'Authentication required' })
@@ -197,18 +197,17 @@ app.post('/api/auctions', async (request, reply) => {
     })
 
     return reply.code(201).send(data)
-  } catch (error) {
+  } catch (error: any) {
     if (error instanceof z.ZodError) {
-      return reply.code(400).send({ error: 'Invalid input', details: error.errors })
+      return reply.code(400).send({ error: 'Invalid input', details: (error as z.ZodError).errors })
     }
-    
-    app.log.error('Failed to create auction:', error)
+    app.log.error(`Failed to create auction: ${String((error as any)?.message || error)}`)
     return reply.code(500).send({ error: 'Failed to create auction' })
   }
 })
 
 // Place bid
-app.post('/api/auctions/:id/bids', async (request, reply) => {
+app.post('/api/auctions/:id/bids', async (request: any, reply: any) => {
   const userId = await getUserFromRequest(request)
   if (!userId) {
     return reply.code(401).send({ error: 'Authentication required' })
@@ -287,18 +286,17 @@ app.post('/api/auctions/:id/bids', async (request, reply) => {
     })
 
     return { success: true }
-  } catch (error) {
+  } catch (error: any) {
     if (error instanceof z.ZodError) {
-      return reply.code(400).send({ error: 'Invalid input', details: error.errors })
+      return reply.code(400).send({ error: 'Invalid input', details: (error as z.ZodError).errors })
     }
-    
-    app.log.error('Failed to place bid:', error)
+    app.log.error(`Failed to place bid: ${String((error as any)?.message || error)}`)
     return reply.code(500).send({ error: 'Failed to place bid' })
   }
 })
 
 // Get bids for an auction
-app.get('/api/auctions/:id/bids', async (request, reply) => {
+app.get('/api/auctions/:id/bids', async (request: any, reply: any) => {
   if (!supabase) {
     return reply.code(500).send({ error: 'Database not configured' })
   }
@@ -315,14 +313,14 @@ app.get('/api/auctions/:id/bids', async (request, reply) => {
     if (error) throw error
 
     return { items: data || [] }
-  } catch (error) {
-    app.log.error('Failed to fetch bids:', error)
+  } catch (error: any) {
+    app.log.error(`Failed to fetch bids: ${String((error as any)?.message || error)}`)
     return reply.code(500).send({ error: 'Failed to fetch bids' })
   }
 })
 
 // SPA fallback route
-app.get('/*', async (request, reply) => {
+app.get('/*', async (request: any, reply: any) => {
   const url = request.url
   
   // Skip API routes
@@ -344,7 +342,7 @@ await app.listen({ port: PORT, host: '0.0.0.0' })
 // Setup WebSocket server
 wss = new WebSocketServer({ server: app.server })
 
-wss.on('connection', (ws) => {
+wss.on('connection', (ws: any) => {
   app.log.info('WebSocket client connected')
   
   // Send welcome message
@@ -378,12 +376,12 @@ if (supabase) {
         const { error: updateError } = await supabase
           .from('auctions')
           .update({ status: 'ended' })
-          .in('id', expiredAuctions.map(a => a.id))
+          .in('id', expiredAuctions.map((a: any) => a.id))
 
         if (updateError) throw updateError
 
         // Broadcast auction endings
-        expiredAuctions.forEach(auction => {
+  expiredAuctions.forEach((auction: any) => {
           broadcastMessage({
             type: 'auction:ended',
             auctionId: auction.id,
@@ -394,7 +392,7 @@ if (supabase) {
         app.log.info(`Ended ${expiredAuctions.length} expired auctions`)
       }
     } catch (error) {
-      app.log.error('Failed to end expired auctions:', error)
+      app.log.error(`Failed to end expired auctions: ${String((error as any)?.message || error)}`)
     }
   }, 30000) // Check every 30 seconds
 }
