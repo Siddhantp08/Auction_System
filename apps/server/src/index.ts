@@ -33,6 +33,7 @@ await app.register(cors, {
 })
 
 // Serve static files
+let staticEnabled = false
 try {
   const __filename = fileURLToPath(import.meta.url)
   const __dirname = dirname(__filename)
@@ -40,7 +41,8 @@ try {
   
   if (fs.existsSync(publicDir)) {
     await app.register(fastifyStatic, { root: publicDir })
-    app.log.info('Static files enabled')
+  app.log.info('Static files enabled')
+  staticEnabled = true
   }
 } catch (error) {
   app.log.warn(`Static files setup failed: ${String((error as any)?.message || error)}`)
@@ -319,20 +321,15 @@ app.get('/api/auctions/:id/bids', async (request: any, reply: any) => {
   }
 })
 
-// SPA fallback route
-app.get('/*', async (request: any, reply: any) => {
-  const url = request.url
-  
-  // Skip API routes
+// SPA fallback: use notFound handler to avoid conflicting wildcard route
+app.setNotFoundHandler(async (request: any, reply: any) => {
+  const url = request.url || ''
   if (url.startsWith('/api') || url.startsWith('/health')) {
     return reply.code(404).send({ error: 'Not found' })
   }
-
-  // Serve index.html for SPA routes
-  if (typeof reply.sendFile === 'function') {
-    return reply.sendFile('index.html')
+  if (staticEnabled && typeof reply.sendFile === 'function') {
+    return reply.type('text/html').sendFile('index.html')
   }
-  
   return reply.code(404).send({ error: 'Not found' })
 })
 
