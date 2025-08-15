@@ -1,0 +1,55 @@
+services:
+  - type: web
+    name: auction-system
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    autoDeploy: true
+    healthCheckPath: /health
+    envVars:
+      - key: ALLOW_DEV_HEADER
+        value: "true"
+      - key: NODE_ENV
+        value: production
+      - key: NODE_OPTIONS
+        value: --dns-result-order=ipv4first
+      - key: PORT
+        value: 8080
+      - key: PGSSLMODE
+        value: require
+      # App URLs (set PUBLIC_ORIGIN to your Render URL after first deploy)
+      - key: PUBLIC_ORIGIN
+        value: https://auction-system-odr4.onrender.com
+      # Supabase (Auth + Postgres)
+      - key: SUPABASE_URL
+        value: https://yxnlxylzwqafqtdfaccq.supabase.co
+      - key: SUPABASE_ANON_KEY
+        sync: false
+      - key: SUPABASE_KEY
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: USE_SUPABASE_REST
+        value: "true"
+      # Upstash Redis (bids cache)
+      - key: REDIS_URL
+        sync: false
+      - key: UPSTASH_REDIS_REST_URL
+        sync: false
+      - key: UPSTASH_REDIS_REST_TOKEN
+        sync: false
+      # SendGrid (emails)
+      - key: SENDGRID_API_KEY
+        sync: false
+      - key: SENDGRID_FROM_EMAIL
+        sync: false
+      # Twilio (SMS)
+      - key: TWILIO_ACCOUNT_SID
+        sync: false
+      - key: TWILIO_AUTH_TOKEN
+        sync: false
+      - key: TWILIO_FROM
+        sync: false
+      # (Optional) Admin user for debug tasks
+      - key: ADMIN_USER_ID
+        value: raghavultimate92004@gmail.com
