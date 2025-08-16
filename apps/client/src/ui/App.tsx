@@ -234,14 +234,18 @@ function CreateAuctionForm({ onSubmit, onCancel }: {
     description: '',
     startingPrice: '',
     bidIncrement: '1',
-    durationMinutes: '60'
+  durationMinutes: '60',
+  startNow: true
   })
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
-    const goLiveAt = new Date(Date.now() + 60000).toISOString() // Start in 1 minute
+    const goLiveAt = formData.startNow
+      ? new Date().toISOString() // Start immediately
+      : new Date(Date.now() + 60000).toISOString() // Start in 1 minute
     onSubmit({
       ...formData,
+      startNow: undefined,
       startingPrice: parseFloat(formData.startingPrice),
       bidIncrement: parseFloat(formData.bidIncrement),
       durationMinutes: parseInt(formData.durationMinutes),
@@ -254,6 +258,15 @@ function CreateAuctionForm({ onSubmit, onCancel }: {
       <div className="bg-white rounded-lg p-6 w-full max-w-md">
         <h2 className="text-xl font-bold mb-4">Create New Auction</h2>
         <form onSubmit={handleSubmit} className="space-y-4">
+          <div className="flex items-center gap-2">
+            <input
+              id="startNow"
+              type="checkbox"
+              checked={formData.startNow}
+              onChange={(e) => setFormData({ ...formData, startNow: e.target.checked })}
+            />
+            <label htmlFor="startNow" className="text-sm text-gray-700">Start auction immediately</label>
+          </div>
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">
               Title
@@ -349,9 +362,8 @@ export function App() {
   const wsRef = useRef<WebSocket | null>(null)
   const [sb, setSb] = useState<typeof initialSupabase>(initialSupabase)
 
-  // Initialize Supabase from server config if not provided at build-time
+  // Initialize Supabase from server /config (overrides any build-time VITE values)
   useEffect(() => {
-    if (sb) return
     const loadConfig = async () => {
       try {
         const res = await fetch(`${API_URL}/config`)
@@ -359,13 +371,18 @@ export function App() {
         const cfg = await res.json()
         if (cfg?.supabaseUrl && cfg?.supabaseAnonKey) {
           setSb(createClient(cfg.supabaseUrl, cfg.supabaseAnonKey))
+        } else if (!sb) {
+          // keep null; auth disabled
+          setSb(null as any)
         }
       } catch {
         // ignore
       }
     }
     loadConfig()
-  }, [sb])
+    // run once on mount
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   // API functions
   const apiCall = async (
