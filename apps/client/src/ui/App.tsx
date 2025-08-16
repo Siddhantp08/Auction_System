@@ -168,10 +168,11 @@ function AuthForm({ onAuth }: { onAuth: (email: string, password: string, isSign
   )
 }
 
-function AuctionCard({ auction, onBid, user }: {
+function AuctionCard({ auction, onBid, user, onChanged }: {
   auction: Auction
   onBid: (auctionId: string, amount: number) => void
   user: User | null
+  onChanged?: () => void
 }) {
   const [bidAmount, setBidAmount] = useState('')
   const [timeLeft, setTimeLeft] = useState('')
@@ -257,14 +258,14 @@ function AuctionCard({ auction, onBid, user }: {
       )}
 
   {/* Seller actions when auction ended */}
-  {user && user.id === auction.sellerId && auction.status === 'ended' && (
-        <SellerActions auctionId={auction.id} />
+      {user && user.id === auction.sellerId && auction.status === 'ended' && (
+        <SellerActions auctionId={auction.id} onChanged={onChanged} />
       )}
     </div>
   )
 }
 
-function SellerActions({ auctionId }: { auctionId: string }) {
+function SellerActions({ auctionId, onChanged }: { auctionId: string; onChanged?: () => void }) {
   const [amount, setAmount] = useState('')
   const [topBid, setTopBid] = useState<{ amount: number; userId?: string; email?: string } | null>(
     null
@@ -277,7 +278,8 @@ function SellerActions({ auctionId }: { auctionId: string }) {
         method: 'POST',
         body: JSON.stringify({ decision: d })
       })
-      alert(`Decision: ${d} sent`)
+  alert(`Decision: ${d} sent`)
+  onChanged?.()
     } catch (e) {
       alert((e as any)?.message || 'Failed')
     }
@@ -293,6 +295,7 @@ function SellerActions({ auctionId }: { auctionId: string }) {
       })
       setAmount('')
       alert('Counter offer sent')
+  onChanged?.()
     } catch (e) {
       alert((e as any)?.message || 'Failed to send counter offer')
     }
@@ -821,6 +824,7 @@ export function App() {
                 auction={auction}
                 onBid={handlePlaceBid}
                 user={user}
+                onChanged={loadAuctions}
               />
             ))}
           </div>

@@ -457,19 +457,37 @@ app.post('/api/auctions/:id/decision', async (request, reply) => {
                 catch { }
             }
             // Mark auction closed
-            if (AuctionModel)
+            if (AuctionModel) {
                 await AuctionModel.update({ status: 'closed' }, { where: { id } });
-            else
-                await sb.from('auctions').update({ status: 'closed' }).eq('id', id);
+            }
+            else if (supabase) {
+                const { error: upd } = await supabase.from('auctions').update({ status: 'closed' }).eq('id', id);
+                if (upd)
+                    throw upd;
+            }
+            else {
+                const { error: upd } = await sb.from('auctions').update({ status: 'closed' }).eq('id', id);
+                if (upd)
+                    throw upd;
+            }
             broadcastMessage({ type: 'auction:closed', auctionId: id, reason: 'accepted' });
         }
         else {
             await notify(topBid.bidderId, 'bid_rejected', { auctionId: id, amount: topBid.amount });
             // Mark auction closed with no winner
-            if (AuctionModel)
+            if (AuctionModel) {
                 await AuctionModel.update({ status: 'closed' }, { where: { id } });
-            else
-                await sb.from('auctions').update({ status: 'closed' }).eq('id', id);
+            }
+            else if (supabase) {
+                const { error: upd } = await supabase.from('auctions').update({ status: 'closed' }).eq('id', id);
+                if (upd)
+                    throw upd;
+            }
+            else {
+                const { error: upd } = await sb.from('auctions').update({ status: 'closed' }).eq('id', id);
+                if (upd)
+                    throw upd;
+            }
             broadcastMessage({ type: 'auction:closed', auctionId: id, reason: 'rejected' });
         }
         return { ok: true };
@@ -567,19 +585,37 @@ app.post('/api/counter-offers/:counterId/respond', async (request, reply) => {
                     catch { }
                 }
                 // Close auction
-                if (AuctionModel)
+                if (AuctionModel) {
                     await AuctionModel.update({ status: 'closed' }, { where: { id: co.auctionId } });
-                else
-                    await sb.from('auctions').update({ status: 'closed' }).eq('id', co.auctionId);
+                }
+                else if (supabase) {
+                    const { error: upd } = await supabase.from('auctions').update({ status: 'closed' }).eq('id', co.auctionId);
+                    if (upd)
+                        throw upd;
+                }
+                else {
+                    const { error: upd } = await sb.from('auctions').update({ status: 'closed' }).eq('id', co.auctionId);
+                    if (upd)
+                        throw upd;
+                }
                 broadcastMessage({ type: 'auction:closed', auctionId: co.auctionId, reason: 'counter_accepted' });
             }
         }
         else {
             // Rejected by buyer: close with no winner
-            if (AuctionModel)
+            if (AuctionModel) {
                 await AuctionModel.update({ status: 'closed' }, { where: { id: co.auctionId } });
-            else
-                await sb.from('auctions').update({ status: 'closed' }).eq('id', co.auctionId);
+            }
+            else if (supabase) {
+                const { error: upd } = await supabase.from('auctions').update({ status: 'closed' }).eq('id', co.auctionId);
+                if (upd)
+                    throw upd;
+            }
+            else {
+                const { error: upd } = await sb.from('auctions').update({ status: 'closed' }).eq('id', co.auctionId);
+                if (upd)
+                    throw upd;
+            }
             broadcastMessage({ type: 'auction:closed', auctionId: co.auctionId, reason: 'counter_rejected' });
         }
         return { ok: true };
