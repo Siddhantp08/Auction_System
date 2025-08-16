@@ -1,0 +1,74 @@
+name: CI/CD
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build & Validate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck (all workspaces)
+        run: npm run typecheck
+
+      - name: Lint (all workspaces)
+        run: npm run lint
+        continue-on-error: true
+
+      - name: Build (all workspaces)
+        run: npm run build
+
+      - name: Docker build (sanity check)
+        run: docker build -t auction-system-ci .
+
+      - name: Upload client build
+        if: success() && hashFiles('apps/client/dist/**') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: client-dist
+          path: apps/client/dist
+
+      - name: Upload server build
+        if: success() && hashFiles('apps/server/dist/**') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: server-dist
+          path: apps/server/dist
+
+  deploy:
+    name: Deploy to Render
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - name: Trigger Render deploy (Deploy Hook)
+        if: env.RENDER_DEPLOY_HOOK != ''
+        env:
+          RENDER_DEPLOY_HOOK: ${{ secrets.RENDER_DEPLOY_HOOK }}
+        run: |
+          echo "Triggering Render deploy..."
+          curl -fsSL -X POST -H 'Accept: application/json' "$RENDER_DEPLOY_HOOK"
+          echo "Deploy triggered"
+
+      - name: Skip (no deploy hook configured)
+        if: env.RENDER_DEPLOY_HOOK == ''
+        run: echo "RENDER_DEPLOY_HOOK not set; deployment step skipped."
