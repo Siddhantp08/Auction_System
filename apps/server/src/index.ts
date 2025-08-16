@@ -23,6 +23,21 @@ const supabase = SUPABASE_URL && SUPABASE_SERVICE_KEY
     })
   : null
 
+function getSupabaseForRequest(request: any) {
+  if (!SUPABASE_URL) return null
+  const authHeader = request?.headers?.authorization as string | undefined
+  const token = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : authHeader
+  if (token && (SUPABASE_ANON_KEY || SUPABASE_SERVICE_KEY)) {
+    // Use user's token so RLS policies (auth.uid()) work with anon key
+    return createClient(SUPABASE_URL, SUPABASE_ANON_KEY || SUPABASE_SERVICE_KEY!, {
+      auth: { persistSession: false },
+      global: { headers: { Authorization: `Bearer ${token}` } }
+    })
+  }
+  // Fallback to service client (bypasses RLS) if available
+  return supabase
+}
+
 // Initialize Fastify
 const app = Fastify({ logger: true })
 
@@ -64,14 +79,16 @@ const PlaceBidSchema = z.object({
 
 // Authentication helper
 async function getUserFromRequest(request: any): Promise<string | null> {
-  const authHeader = request.headers.authorization
-  if (!authHeader || !supabase) return null
-
+  const authHeader = request.headers.authorization as string | undefined
+  if (!authHeader || !SUPABASE_URL || (!SUPABASE_ANON_KEY && !SUPABASE_SERVICE_KEY)) return null
   try {
-    const token = authHeader.replace('Bearer ', '')
-    const { data, error } = await supabase.auth.getUser(token)
-    
-    if (error || !data.user) return null
+    const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : authHeader
+    const s = createClient(SUPABASE_URL, SUPABASE_ANON_KEY || SUPABASE_SERVICE_KEY!, {
+      auth: { persistSession: false },
+      global: { headers: { Authorization: `Bearer ${token}` } }
+    })
+    const { data, error } = await s.auth.getUser()
+    if (error || !data?.user) return null
     return data.user.id
   } catch {
     return null
@@ -106,12 +123,13 @@ app.get('/config', async () => {
 
 // Get all auctions
 app.get('/api/auctions', async (request: any, reply: any) => {
-  if (!supabase) {
+  const sb = getSupabaseForRequest(request)
+  if (!sb) {
     return reply.code(500).send({ error: 'Database not configured' })
   }
 
   try {
-    const { data, error } = await supabase
+    const { data, error } = await sb
       .from('auctions')
       .select('*')
       .order('createdAt', { ascending: false })
@@ -127,14 +145,15 @@ app.get('/api/auctions', async (request: any, reply: any) => {
 
 // Get single auction
 app.get('/api/auctions/:id', async (request: any, reply: any) => {
-  if (!supabase) {
+  const sb = getSupabaseForRequest(request)
+  if (!sb) {
     return reply.code(500).send({ error: 'Database not configured' })
   }
 
   const { id } = request.params as { id: string }
 
   try {
-    const { data, error } = await supabase
+  const { data, error } = await sb
       .from('auctions')
       .select('*')
       .eq('id', id)
@@ -158,7 +177,8 @@ app.post('/api/auctions', async (request: any, reply: any) => {
     return reply.code(401).send({ error: 'Authentication required' })
   }
 
-  if (!supabase) {
+  const sb = getSupabaseForRequest(request)
+  if (!sb) {
     return reply.code(500).send({ error: 'Database not configured' })
   }
 
@@ -184,7 +204,7 @@ app.post('/api/auctions', async (request: any, reply: any) => {
       updatedAt: now.toISOString()
     }
 
-    const { data, error } = await supabase
+  const { data, error } = await sb
       .from('auctions')
       .insert(auctionData)
       .select()
@@ -215,7 +235,8 @@ app.post('/api/auctions/:id/bids', async (request: any, reply: any) => {
     return reply.code(401).send({ error: 'Authentication required' })
   }
 
-  if (!supabase) {
+  const sb = getSupabaseForRequest(request)
+  if (!sb) {
     return reply.code(500).send({ error: 'Database not configured' })
   }
 
@@ -225,7 +246,7 @@ app.post('/api/auctions/:id/bids', async (request: any, reply: any) => {
     const { amount } = PlaceBidSchema.parse(request.body)
 
     // Get current auction state
-    const { data: auction, error: auctionError } = await supabase
+  const { data: auction, error: auctionError } = await sb
       .from('auctions')
       .select('*')
       .eq('id', id)
@@ -255,7 +276,7 @@ app.post('/api/auctions/:id/bids', async (request: any, reply: any) => {
     }
 
     // Update auction with new bid
-    const { error: updateError } = await supabase
+  const { error: updateError } = await sb
       .from('auctions')
       .update({ 
         currentPrice: amount,
@@ -266,7 +287,7 @@ app.post('/api/auctions/:id/bids', async (request: any, reply: any) => {
     if (updateError) throw updateError
 
     // Record the bid
-    const { error: bidError } = await supabase
+  const { error: bidError } = await sb
       .from('bids')
       .insert({
         id: nanoid(),
@@ -299,14 +320,15 @@ app.post('/api/auctions/:id/bids', async (request: any, reply: any) => {
 
 // Get bids for an auction
 app.get('/api/auctions/:id/bids', async (request: any, reply: any) => {
-  if (!supabase) {
+  const sb = getSupabaseForRequest(request)
+  if (!sb) {
     return reply.code(500).send({ error: 'Database not configured' })
   }
 
   const { id } = request.params as { id: string }
 
   try {
-    const { data, error } = await supabase
+  const { data, error } = await sb
       .from('bids')
       .select('*')
       .eq('auctionId', id)
