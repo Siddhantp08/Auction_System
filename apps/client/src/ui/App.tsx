@@ -233,7 +233,7 @@ function AuctionCard({ auction, onBid, user }: {
         </div>
       </div>
 
-  {user && isActive && timeLeft !== 'Ended' && (
+  {user && user.id !== auction.sellerId && isActive && timeLeft !== 'Ended' && (
         <div className="border-t pt-4">
           <div className="flex gap-2">
             <input

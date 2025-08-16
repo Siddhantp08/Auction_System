@@ -332,6 +332,7 @@ app.post('/api/auctions/:id/bids', async (request: any, reply: any) => {
       const row = await AuctionModel.findOne({ where: { id } })
       if (!row) return reply.code(404).send({ error: 'Auction not found' })
       auction = row.toJSON()
+      if (auction.sellerId === userId) return reply.code(403).send({ error: 'Sellers cannot bid on their own auction' })
       const top = await BidModel.findOne({ where: { auctionId: id }, order: [['createdAt','DESC']] })
       prevTopBidder = top ? (top.get('bidderId') as string) : null
       const endsAt = new Date(auction.endsAt)
@@ -359,6 +360,7 @@ app.post('/api/auctions/:id/bids', async (request: any, reply: any) => {
       const res = await sb.from('auctions').select('*').eq('id', id).single()
       if (res.error || !res.data) return reply.code(404).send({ error: 'Auction not found' })
       auction = res.data
+      if ((auction as any).sellerId === userId) return reply.code(403).send({ error: 'Sellers cannot bid on their own auction' })
       const endsAt = new Date(auction.endsAt)
       if (now > endsAt || auction.status !== 'live') return reply.code(400).send({ error: 'Auction is not active' })
       const minBid = Number(auction.currentPrice) + Number(auction.bidIncrement)
@@ -650,15 +652,20 @@ app.get('/api/counter-offers', async (request: any, reply: any) => {
 
 // Get bids for an auction
 app.get('/api/auctions/:id/bids', async (request: any, reply: any) => {
+  const userId = await getUserFromRequest(request)
+  if (!userId) return reply.code(401).send({ error: 'Authentication required' })
   const sb = getSupabaseForRequest(request)
-  if (!sb) {
-    return reply.code(500).send({ error: 'Database not configured' })
-  }
+  if (!sb) return reply.code(500).send({ error: 'Database not configured' })
 
   const { id } = request.params as { id: string }
 
   try {
-  const { data, error } = await sb
+    // Only the seller can view full bid list (including highest bidder)
+    const { data: auction } = await sb.from('auctions').select('sellerId').eq('id', id).single()
+    if (!auction) return reply.code(404).send({ error: 'Auction not found' })
+    if (auction.sellerId !== userId) return reply.code(403).send({ error: 'Forbidden' })
+
+    const { data, error } = await sb
       .from('bids')
       .select('*')
       .eq('auctionId', id)
