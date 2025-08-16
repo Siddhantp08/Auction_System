@@ -69,6 +69,19 @@ const CreateAuctionSchema = z.object({
 const PlaceBidSchema = z.object({
     amount: z.number().min(0)
 });
+const CounterOfferSchema = z.object({ amount: z.number().min(0.01) });
+const DecisionSchema = z.object({ decision: z.enum(['accept', 'reject']) });
+function devMode() {
+    return process.env.NODE_ENV !== 'production' || process.env.ALLOW_DEV_HEADER === 'true';
+}
+function formatDbError(err) {
+    const e = err || {};
+    return {
+        message: e.message || String(e),
+        code: e.code,
+        details: e.details || e.hint || undefined
+    };
+}
 // Authentication helper
 async function getUserFromRequest(request) {
     const authHeader = request.headers.authorization;
@@ -100,6 +113,27 @@ function broadcastMessage(message) {
             client.send(messageStr);
         }
     });
+}
+// Persist + broadcast a notification
+async function notify(userId, type, payload) {
+    // Broadcast to clients
+    broadcastMessage({
+        type: 'notification',
+        userId,
+        payload: { type, ...payload },
+        ts: new Date().toISOString()
+    });
+    // Best-effort persist if service client configured and table exists
+    if (supabase) {
+        try {
+            await supabase
+                .from('notifications')
+                .insert({ id: nanoid(), userId, type, payload, createdAt: new Date().toISOString() });
+        }
+        catch (_err) {
+            // ignore if table not found or RLS blocks
+        }
+    }
 }
 // Routes
 app.get('/health', async () => {
@@ -202,7 +236,7 @@ app.post('/api/auctions', async (request, reply) => {
             return reply.code(400).send({ error: 'Invalid input', details: error.errors });
         }
         app.log.error(`Failed to create auction: ${String(error?.message || error)}`);
-        return reply.code(500).send({ error: 'Failed to create auction' });
+        return reply.code(500).send({ error: 'Failed to create auction', ...(devMode() ? { db: formatDbError(error) } : {}) });
     }
 });
 // Place bid
@@ -272,6 +306,13 @@ app.post('/api/auctions/:id/bids', async (request, reply) => {
             userId: userId,
             timestamp: now.toISOString()
         });
+        // Notify seller about new bid
+        try {
+            if (auction?.sellerId) {
+                await notify(auction.sellerId, 'new_bid', { auctionId: id, amount, bidderId: userId });
+            }
+        }
+        catch { }
         return { success: true };
     }
     catch (error) {
@@ -279,7 +320,205 @@ app.post('/api/auctions/:id/bids', async (request, reply) => {
             return reply.code(400).send({ error: 'Invalid input', details: error.errors });
         }
         app.log.error(`Failed to place bid: ${String(error?.message || error)}`);
-        return reply.code(500).send({ error: 'Failed to place bid' });
+        return reply.code(500).send({ error: 'Failed to place bid', ...(devMode() ? { db: formatDbError(error) } : {}) });
+    }
+});
+// Seller decision (accept/reject highest bid) after auction ends
+app.post('/api/auctions/:id/decision', async (request, reply) => {
+    const userId = await getUserFromRequest(request);
+    if (!userId) {
+        return reply.code(401).send({ error: 'Authentication required' });
+    }
+    const sb = getSupabaseForRequest(request);
+    if (!sb) {
+        return reply.code(500).send({ error: 'Database not configured' });
+    }
+    const { id } = request.params;
+    try {
+        const { decision } = DecisionSchema.parse(request.body);
+        const { data: auction } = await sb.from('auctions').select('*').eq('id', id).single();
+        if (!auction)
+            return reply.code(404).send({ error: 'Auction not found' });
+        if (auction.sellerId !== userId)
+            return reply.code(403).send({ error: 'Forbidden' });
+        const { data: topBid } = await sb
+            .from('bids')
+            .select('*')
+            .eq('auctionId', id)
+            .order('createdAt', { ascending: false })
+            .limit(1)
+            .maybeSingle();
+        if (!topBid)
+            return reply.code(400).send({ error: 'No bids' });
+        if (decision === 'accept') {
+            await notify(topBid.bidderId, 'bid_accepted', { auctionId: id, amount: topBid.amount });
+        }
+        else {
+            await notify(topBid.bidderId, 'bid_rejected', { auctionId: id, amount: topBid.amount });
+        }
+        return { ok: true };
+    }
+    catch (error) {
+        if (error instanceof z.ZodError) {
+            return reply.code(400).send({ error: 'Invalid input', details: error.errors });
+        }
+        return reply.code(400).send({ error: 'Invalid request' });
+    }
+});
+// Seller creates a counter-offer to highest bidder
+app.post('/api/auctions/:id/counter-offers', async (request, reply) => {
+    const userId = await getUserFromRequest(request);
+    if (!userId) {
+        return reply.code(401).send({ error: 'Authentication required' });
+    }
+    const sb = getSupabaseForRequest(request);
+    if (!sb) {
+        return reply.code(500).send({ error: 'Database not configured' });
+    }
+    const { id } = request.params;
+    try {
+        const { amount } = CounterOfferSchema.parse(request.body);
+        const { data: auction } = await sb.from('auctions').select('*').eq('id', id).single();
+        if (!auction)
+            return reply.code(404).send({ error: 'Auction not found' });
+        if (auction.sellerId !== userId)
+            return reply.code(403).send({ error: 'Forbidden' });
+        const { data: topBid } = await sb
+            .from('bids')
+            .select('*')
+            .eq('auctionId', id)
+            .order('createdAt', { ascending: false })
+            .limit(1)
+            .maybeSingle();
+        if (!topBid)
+            return reply.code(400).send({ error: 'No bids to counter' });
+        const row = { id: nanoid(), auctionId: id, sellerId: userId, buyerId: topBid.bidderId, amount, status: 'pending', createdAt: new Date().toISOString() };
+        const { error } = await sb.from('counter_offers').insert(row);
+        if (error)
+            throw error;
+        await notify(topBid.bidderId, 'counter_offer', { auctionId: id, amount, counterOfferId: row.id });
+        return { ok: true, id: row.id };
+    }
+    catch (error) {
+        if (error instanceof z.ZodError) {
+            return reply.code(400).send({ error: 'Invalid input', details: error.errors });
+        }
+        return reply.code(400).send({ error: 'Invalid request' });
+    }
+});
+// Buyer responds to counter-offer
+app.post('/api/counter-offers/:counterId/respond', async (request, reply) => {
+    const userId = await getUserFromRequest(request);
+    if (!userId) {
+        return reply.code(401).send({ error: 'Authentication required' });
+    }
+    const sb = getSupabaseForRequest(request);
+    if (!sb) {
+        return reply.code(500).send({ error: 'Database not configured' });
+    }
+    const { counterId } = request.params;
+    try {
+        const { decision } = DecisionSchema.parse(request.body);
+        const { data: co } = await sb.from('counter_offers').select('*').eq('id', counterId).single();
+        if (!co)
+            return reply.code(404).send({ error: 'Not found' });
+        if (co.buyerId !== userId && co.sellerId !== userId)
+            return reply.code(403).send({ error: 'Forbidden' });
+        const status = decision === 'accept' ? 'accepted' : 'rejected';
+        const { error } = await sb.from('counter_offers').update({ status }).eq('id', counterId);
+        if (error)
+            throw error;
+        await notify(co.sellerId, `counter_${status}`, { counterOfferId: counterId, auctionId: co.auctionId, amount: co.amount });
+        await notify(co.buyerId, `counter_${status}`, { counterOfferId: counterId, auctionId: co.auctionId, amount: co.amount });
+        return { ok: true };
+    }
+    catch (error) {
+        if (error instanceof z.ZodError) {
+            return reply.code(400).send({ error: 'Invalid input', details: error.errors });
+        }
+        return reply.code(400).send({ error: 'Invalid request' });
+    }
+});
+// Notifications API
+app.get('/api/notifications', async (request, reply) => {
+    const userId = await getUserFromRequest(request);
+    if (!userId) {
+        return reply.code(401).send({ error: 'Authentication required' });
+    }
+    const sb = getSupabaseForRequest(request);
+    if (!sb) {
+        return reply.code(500).send({ error: 'Database not configured' });
+    }
+    try {
+        const { data, error } = await sb
+            .from('notifications')
+            .select('*')
+            .eq('userId', userId)
+            .order('createdAt', { ascending: false })
+            .limit(50);
+        if (error)
+            throw error;
+        return { items: data || [] };
+    }
+    catch (_err) {
+        // Table may not exist yet; return empty
+        return { items: [] };
+    }
+});
+app.post('/api/notifications/:id/read', async (request, reply) => {
+    const userId = await getUserFromRequest(request);
+    if (!userId) {
+        return reply.code(401).send({ error: 'Authentication required' });
+    }
+    const sb = getSupabaseForRequest(request);
+    if (!sb) {
+        return reply.code(500).send({ error: 'Database not configured' });
+    }
+    const { id } = request.params;
+    try {
+        await sb.from('notifications').update({ read: true }).eq('id', id).eq('userId', userId);
+        return { ok: true };
+    }
+    catch (_err) {
+        return { ok: false };
+    }
+});
+// List counter offers for current user (as buyer or seller)
+app.get('/api/counter-offers', async (request, reply) => {
+    const userId = await getUserFromRequest(request);
+    if (!userId) {
+        return reply.code(401).send({ error: 'Authentication required' });
+    }
+    const sb = getSupabaseForRequest(request);
+    if (!sb) {
+        return reply.code(500).send({ error: 'Database not configured' });
+    }
+    const role = request.query?.role || 'all';
+    try {
+        let query = sb.from('counter_offers').select('*').order('createdAt', { ascending: false });
+        if (role === 'buyer') {
+            query = query.eq('buyerId', userId);
+        }
+        else if (role === 'seller') {
+            query = query.eq('sellerId', userId);
+        }
+        else {
+            // both
+            // Supabase doesn't support OR easily in this SDK chain; do two queries and merge
+            const [buyerRes, sellerRes] = await Promise.all([
+                sb.from('counter_offers').select('*').eq('buyerId', userId).order('createdAt', { ascending: false }),
+                sb.from('counter_offers').select('*').eq('sellerId', userId).order('createdAt', { ascending: false })
+            ]);
+            const items = [...(buyerRes.data || []), ...(sellerRes.data || [])];
+            return { items };
+        }
+        const { data, error } = await query;
+        if (error)
+            throw error;
+        return { items: data || [] };
+    }
+    catch (_err) {
+        return { items: [] };
     }
 });
 // Get bids for an auction
@@ -350,14 +589,27 @@ if (supabase) {
                     .in('id', expiredAuctions.map((a) => a.id));
                 if (updateError)
                     throw updateError;
-                // Broadcast auction endings
-                expiredAuctions.forEach((auction) => {
+                // Broadcast auction endings and notify highest bidder
+                for (const auction of expiredAuctions) {
                     broadcastMessage({
                         type: 'auction:ended',
                         auctionId: auction.id,
                         timestamp: now
                     });
-                });
+                    try {
+                        const { data: topBid } = await supabase
+                            .from('bids')
+                            .select('*')
+                            .eq('auctionId', auction.id)
+                            .order('createdAt', { ascending: false })
+                            .limit(1)
+                            .maybeSingle();
+                        if (topBid) {
+                            await notify(topBid.bidderId, 'auction_ended', { auctionId: auction.id, amount: topBid.amount });
+                        }
+                    }
+                    catch { }
+                }
                 app.log.info(`Ended ${expiredAuctions.length} expired auctions`);
             }
         }

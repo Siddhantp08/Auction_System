@@ -32,6 +32,26 @@ interface User {
   email: string
 }
 
+interface NotificationItem {
+  id?: string
+  userId?: string
+  type: string
+  payload: any
+  read?: boolean
+  createdAt?: string
+}
+
+interface CounterOffer {
+  id: string
+  auctionId: string
+  sellerId: string
+  buyerId: string
+  amount: number
+  status: 'pending' | 'accepted' | 'rejected'
+  createdAt: string
+  updatedAt?: string
+}
+
 // Utility functions
 const formatCurrency = (amount: number) => `$${amount.toFixed(2)}`
 const formatTime = (isoString: string) => {
@@ -108,6 +128,7 @@ function AuthForm({ onAuth }: { onAuth: (email: string, password: string, isSign
               type="email"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
+              aria-label="Email"
               className="w-full px-3 py-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
               required
             />
@@ -120,6 +141,7 @@ function AuthForm({ onAuth }: { onAuth: (email: string, password: string, isSign
               type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
+              aria-label="Password"
               className="w-full px-3 py-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
               required
               minLength={6}
@@ -199,7 +221,7 @@ function AuctionCard({ auction, onBid, user }: {
         </div>
       </div>
 
-      {user && isActive && timeLeft !== 'Ended' && (
+  {user && isActive && timeLeft !== 'Ended' && (
         <div className="border-t pt-4">
           <div className="flex gap-2">
             <input
@@ -221,6 +243,70 @@ function AuctionCard({ auction, onBid, user }: {
           </div>
         </div>
       )}
+
+      {/* Seller actions when auction ended */}
+      {user && user.id === auction.sellerId && auction.status !== 'live' && (
+        <SellerActions auctionId={auction.id} />
+      )}
+    </div>
+  )
+}
+
+function SellerActions({ auctionId }: { auctionId: string }) {
+  const [amount, setAmount] = useState('')
+
+  const decision = async (d: 'accept' | 'reject') => {
+    try {
+      await apiCall(`/api/auctions/${auctionId}/decision`, {
+        method: 'POST',
+        body: JSON.stringify({ decision: d })
+      })
+      alert(`Decision: ${d} sent`)
+    } catch (e) {
+      alert((e as any)?.message || 'Failed')
+    }
+  }
+
+  const sendCounter = async () => {
+    const val = parseFloat(amount)
+    if (!isFinite(val) || val <= 0) return
+    try {
+      await apiCall(`/api/auctions/${auctionId}/counter-offers`, {
+        method: 'POST',
+        body: JSON.stringify({ amount: val })
+      })
+      setAmount('')
+      alert('Counter offer sent')
+    } catch (e) {
+      alert((e as any)?.message || 'Failed to send counter offer')
+    }
+  }
+
+  // Access App's apiCall via a global set by App
+  type ApiCall = (
+    endpoint: string,
+    options?: Omit<RequestInit, 'headers'> & { headers?: Record<string, string> }
+  ) => Promise<any>
+  const apiCall: ApiCall = (window as any)._appApiCall
+
+  return (
+    <div className="border-t pt-4 mt-4 space-y-2">
+      <div className="flex gap-2">
+        <button onClick={() => decision('accept')} className="px-3 py-2 bg-green-600 text-white rounded hover:bg-green-700">Accept Top Bid</button>
+        <button onClick={() => decision('reject')} className="px-3 py-2 bg-red-600 text-white rounded hover:bg-red-700">Reject Top Bid</button>
+      </div>
+      <div className="flex gap-2 items-center">
+        <input
+          type="number"
+          value={amount}
+          onChange={(e) => setAmount(e.target.value)}
+          placeholder="Counter offer amount"
+          aria-label="Counter offer amount"
+          step="0.01"
+          className="flex-1 px-3 py-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
+        />
+        <button onClick={sendCounter} className="px-3 py-2 bg-blue-600 text-white rounded hover:bg-blue-700">Send Counter</button>
+      </div>
     </div>
   )
 }
@@ -275,6 +361,7 @@ function CreateAuctionForm({ onSubmit, onCancel }: {
               type="text"
               value={formData.title}
               onChange={(e) => setFormData({...formData, title: e.target.value})}
+              aria-label="Auction title"
               className="w-full px-3 py-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
               required
             />
@@ -286,6 +373,7 @@ function CreateAuctionForm({ onSubmit, onCancel }: {
             <textarea
               value={formData.description}
               onChange={(e) => setFormData({...formData, description: e.target.value})}
+              aria-label="Auction description"
               className="w-full px-3 py-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
               rows={3}
             />
@@ -298,6 +386,7 @@ function CreateAuctionForm({ onSubmit, onCancel }: {
               type="number"
               value={formData.startingPrice}
               onChange={(e) => setFormData({...formData, startingPrice: e.target.value})}
+              aria-label="Starting price"
               className="w-full px-3 py-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
               min="0"
               step="0.01"
@@ -312,6 +401,7 @@ function CreateAuctionForm({ onSubmit, onCancel }: {
               type="number"
               value={formData.bidIncrement}
               onChange={(e) => setFormData({...formData, bidIncrement: e.target.value})}
+              aria-label="Bid increment"
               className="w-full px-3 py-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
               min="0.01"
               step="0.01"
@@ -326,6 +416,7 @@ function CreateAuctionForm({ onSubmit, onCancel }: {
               type="number"
               value={formData.durationMinutes}
               onChange={(e) => setFormData({...formData, durationMinutes: e.target.value})}
+              aria-label="Duration in minutes"
               className="w-full px-3 py-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
               min="1"
               required
@@ -361,6 +452,8 @@ export function App() {
   const [loading, setLoading] = useState(true)
   const wsRef = useRef<WebSocket | null>(null)
   const [sb, setSb] = useState<typeof initialSupabase>(initialSupabase)
+  const [notifications, setNotifications] = useState<NotificationItem[]>([])
+  const [showNotifications, setShowNotifications] = useState(false)
 
   // Initialize Supabase from server /config (overrides any build-time VITE values)
   useEffect(() => {
@@ -385,7 +478,7 @@ export function App() {
   }, [])
 
   // API functions
-  const apiCall = async (
+  const _appApiCall = async (
     endpoint: string,
     options?: Omit<RequestInit, 'headers'> & { headers?: Record<string, string> }
   ) => {
@@ -401,7 +494,7 @@ export function App() {
       }
     }
 
-    const response = await fetch(`${API_URL}${endpoint}`, {
+  const response = await fetch(`${API_URL}${endpoint}`, {
       ...options,
       headers
     })
@@ -421,6 +514,9 @@ export function App() {
 
     return response.json()
   }
+  // expose for nested components
+  ;(window as any)._appApiCall = _appApiCall
+  const apiCall = _appApiCall
 
   // Load auctions
   const loadAuctions = async () => {
@@ -429,6 +525,15 @@ export function App() {
       setAuctions(data.items || [])
     } catch (error) {
       console.error('Failed to load auctions:', error)
+    }
+  }
+
+  const loadNotifications = async () => {
+    try {
+      const data = await apiCall('/api/notifications')
+      setNotifications(data.items || [])
+    } catch {
+      // ignore if table missing
     }
   }
 
@@ -488,6 +593,26 @@ export function App() {
     }
   }
 
+  const respondCounter = async (counterId: string, decision: 'accept' | 'reject') => {
+    try {
+      await apiCall(`/api/counter-offers/${counterId}/respond`, {
+        method: 'POST',
+        body: JSON.stringify({ decision })
+      })
+      // Refresh notifications
+      loadNotifications()
+    } catch (e) {
+      alert((e as any)?.message || 'Failed to respond')
+    }
+  }
+
+  const markRead = async (id: string) => {
+    try {
+      await apiCall(`/api/notifications/${id}/read`, { method: 'POST' })
+      setNotifications(prev => prev.map(n => (n.id === id ? { ...n, read: true } : n)))
+    } catch {}
+  }
+
   // WebSocket connection
   useEffect(() => {
     const ws = new WebSocket(WS_URL)
@@ -502,6 +627,10 @@ export function App() {
             ? { ...auction, currentPrice: message.amount }
             : auction
         ))
+      } else if (message.type === 'auction:ended') {
+        setAuctions(prev => prev.map(a => a.id === message.auctionId ? { ...a, status: 'ended' } : a))
+      } else if (message.type === 'notification' && user && message.userId === user.id) {
+        setNotifications(prev => [{ type: message.payload?.type || 'info', payload: message.payload, createdAt: message.ts, read: false }, ...prev])
       }
     }
 
@@ -528,8 +657,10 @@ export function App() {
       if (session?.user) {
         setUser({ id: session.user.id, email: session.user.email || '' })
         setShowAuth(false)
+  loadNotifications()
       } else {
         setUser(null)
+  setNotifications([])
       }
     })
 
@@ -540,6 +671,7 @@ export function App() {
   useEffect(() => {
     if (!loading) {
       loadAuctions()
+    if (user) loadNotifications()
     }
   }, [loading])
 
@@ -567,12 +699,20 @@ export function App() {
         <div className="flex justify-between items-center mb-8">
           <h2 className="text-3xl font-bold text-gray-800">Live Auctions</h2>
           {user && (
-            <button
-              onClick={() => setShowCreateForm(true)}
-              className="px-6 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
-            >
-              Create Auction
-            </button>
+            <div className="flex gap-3 items-center">
+              <button
+                onClick={() => setShowNotifications(v => !v)}
+                className="px-4 py-2 bg-purple-600 text-white rounded hover:bg-purple-700"
+              >
+                Notifications ({notifications.filter(n => !n.read).length})
+              </button>
+              <button
+                onClick={() => setShowCreateForm(true)}
+                className="px-6 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
+              >
+                Create Auction
+              </button>
+            </div>
           )}
         </div>
 
@@ -608,6 +748,86 @@ export function App() {
           onCancel={() => setShowCreateForm(false)}
         />
       )}
+
+      {showNotifications && user && (
+        <NotificationsPanel
+          notifications={notifications}
+          onClose={() => setShowNotifications(false)}
+          onMarkRead={markRead}
+          onRespondCounter={respondCounter}
+        />
+      )}
     </div>
   )
+}
+
+function NotificationsPanel({ notifications, onClose, onMarkRead, onRespondCounter }: {
+  notifications: NotificationItem[]
+  onClose: () => void
+  onMarkRead: (id: string) => void
+  onRespondCounter: (counterId: string, decision: 'accept' | 'reject') => void
+}) {
+  return (
+    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+      <div className="bg-white rounded-lg p-6 w-full max-w-xl max-h-[80vh] overflow-auto">
+        <div className="flex justify-between items-center mb-4">
+          <h3 className="text-xl font-bold">Notifications</h3>
+          <button onClick={onClose} className="px-3 py-1 bg-gray-200 rounded">Close</button>
+        </div>
+        {notifications.length === 0 ? (
+          <div className="text-gray-600">No notifications</div>
+        ) : (
+          <ul className="space-y-3">
+            {notifications.map((n, idx) => (
+              <li key={(n.id as any) || idx} className={`border p-3 rounded ${n.read ? 'bg-white' : 'bg-yellow-50'}`}>
+                <div className="flex justify-between items-start">
+                  <div>
+                    <div className="font-medium">{n.type.replace('_', ' ').toUpperCase()}</div>
+                    <div className="text-sm text-gray-700 break-words">
+                      {renderNotificationText(n)}
+                    </div>
+                  </div>
+                  {n.id && (
+                    <button onClick={() => onMarkRead(n.id!)} className="text-sm text-blue-600 hover:underline">Mark read</button>
+                  )}
+                </div>
+                {n.type === 'counter_offer' && n.payload?.counterOfferId && (
+                  <div className="mt-2 flex gap-2">
+                    <button onClick={() => onRespondCounter(n.payload.counterOfferId, 'accept')} className="px-3 py-1 bg-green-600 text-white rounded">Accept</button>
+                    <button onClick={() => onRespondCounter(n.payload.counterOfferId, 'reject')} className="px-3 py-1 bg-red-600 text-white rounded">Reject</button>
+                  </div>
+                )}
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function renderNotificationText(n: NotificationItem) {
+  const p = n.payload || {}
+  switch (n.type) {
+    case 'new_bid':
+      return `New bid: $${Number(p.amount).toFixed(2)} on auction ${p.auctionId}`
+    case 'auction_ended':
+      return `Auction ended. Highest bid: $${Number(p.amount).toFixed(2)} (auction ${p.auctionId})`
+    case 'bid_accepted':
+      return `Your bid was accepted on auction ${p.auctionId} for $${Number(p.amount).toFixed(2)}`
+    case 'bid_rejected':
+      return `Your bid was rejected on auction ${p.auctionId}`
+    case 'counter_offer':
+      return `Counter offer: $${Number(p.amount).toFixed(2)} on auction ${p.auctionId}`
+    case 'counter_accepted':
+      return `Counter offer accepted on auction ${p.auctionId}`
+    case 'counter_rejected':
+      return `Counter offer rejected on auction ${p.auctionId}`
+    default:
+      try {
+        return JSON.stringify(n.payload)
+      } catch {
+        return String(n.payload)
+      }
+  }
 }
