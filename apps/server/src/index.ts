@@ -713,6 +713,29 @@ if (supabase) {
     try {
       const now = new Date().toISOString()
       
+      // Promote scheduled auctions that reached goLiveAt
+      try {
+        const { data: toLive, error: toLiveErr } = await supabase
+          .from('auctions')
+          .select('id')
+          .eq('status', 'scheduled')
+          .lte('goLiveAt', now)
+        if (toLiveErr) throw toLiveErr
+        if (toLive && toLive.length > 0) {
+          const { error: updErr } = await supabase
+            .from('auctions')
+            .update({ status: 'live' })
+            .in('id', toLive.map((a: any) => a.id))
+          if (updErr) throw updErr
+          for (const a of toLive as any[]) {
+            broadcastMessage({ type: 'auction:live', auctionId: a.id, timestamp: now })
+          }
+          app.log.info(`Activated ${toLive.length} scheduled auctions`)
+        }
+      } catch (e) {
+        app.log.warn(`Failed to activate scheduled auctions: ${String((e as any)?.message || e)}`)
+      }
+
       const { data: expiredAuctions, error } = await supabase
         .from('auctions')
         .select('id')
