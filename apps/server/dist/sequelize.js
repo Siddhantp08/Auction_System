@@ -1,36 +1,43 @@
-import { Sequelize, DataTypes } from 'sequelize';
 import { URL } from 'url';
 const USE_SUPABASE_REST = process.env.USE_SUPABASE_REST === 'true';
-const DATABASE_URL = process.env.DATABASE_URL;
-if (!DATABASE_URL && !USE_SUPABASE_REST) {
-    console.warn('[DB] DATABASE_URL not set. Sequelize will not connect. Some features will be disabled until configured.');
-}
-export const sequelize = (!USE_SUPABASE_REST && DATABASE_URL)
-    ? (() => {
-        const u = new URL(DATABASE_URL);
-        const username = decodeURIComponent(u.username);
-        const password = decodeURIComponent(u.password);
-        const database = u.pathname.replace(/^\//, '');
-        const host = process.env.PGHOSTADDR || u.hostname;
-        const port = Number(u.port || 5432);
-        return new Sequelize(database, username, password, {
-            host,
-            port,
-            dialect: 'postgres',
-            logging: false,
-            dialectOptions: {
-                ssl: { require: true, rejectUnauthorized: false }
-            }
-        });
-    })()
-    : null;
+export let sequelize = null;
 export let AuctionModel;
 export let BidModel;
 export let CounterOfferModel;
 export let NotificationModel;
 export async function initModels() {
-    if (!sequelize)
+    const DATABASE_URL = process.env.DATABASE_URL;
+    if (USE_SUPABASE_REST || !DATABASE_URL) {
+        if (!DATABASE_URL && !USE_SUPABASE_REST) {
+            console.warn('[DB] DATABASE_URL not set. Sequelize will not connect. Skipping ORM models.');
+        }
         return;
+    }
+    let Sequelize, DataTypes;
+    try {
+        const mod = await import('sequelize');
+        Sequelize = mod.Sequelize;
+        DataTypes = mod.DataTypes;
+    }
+    catch {
+        console.warn('[DB] sequelize package not installed. Skipping ORM models.');
+        return;
+    }
+    const u = new URL(DATABASE_URL);
+    const username = decodeURIComponent(u.username);
+    const password = decodeURIComponent(u.password);
+    const database = u.pathname.replace(/^\//, '');
+    const host = process.env.PGHOSTADDR || u.hostname;
+    const port = Number(u.port || 5432);
+    sequelize = new Sequelize(database, username, password, {
+        host,
+        port,
+        dialect: 'postgres',
+        logging: false,
+        dialectOptions: {
+            ssl: { require: true, rejectUnauthorized: false }
+        }
+    });
     AuctionModel = sequelize.define('Auction', {
         id: { type: DataTypes.STRING, primaryKey: true },
         sellerId: { type: DataTypes.STRING, allowNull: false },
