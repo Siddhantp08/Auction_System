@@ -333,7 +333,7 @@ app.post('/api/auctions/:id/bids', async (request: any, reply: any) => {
       if (!row) return reply.code(404).send({ error: 'Auction not found' })
       auction = row.toJSON()
       if (auction.sellerId === userId) return reply.code(403).send({ error: 'Sellers cannot bid on their own auction' })
-      const top = await BidModel.findOne({ where: { auctionId: id }, order: [['createdAt','DESC']] })
+  const top = await BidModel.findOne({ where: { auctionId: id }, order: [['amount','DESC']] })
       prevTopBidder = top ? (top.get('bidderId') as string) : null
       const endsAt = new Date(auction.endsAt)
       if (now > endsAt || auction.status !== 'live') return reply.code(400).send({ error: 'Auction is not active' })
@@ -370,7 +370,7 @@ app.post('/api/auctions/:id/bids', async (request: any, reply: any) => {
       const topRes = await sb
         .from('bids').select('*')
         .eq('auctionId', id)
-        .order('createdAt', { ascending: false })
+        .order('amount', { ascending: false })
         .limit(1).maybeSingle()
       prevTopBidder = topRes.data ? topRes.data.bidderId : null
 
@@ -433,21 +433,22 @@ app.post('/api/auctions/:id/decision', async (request: any, reply: any) => {
 
   try {
     const { decision } = DecisionSchema.parse(request.body)
-    const { data: auction } = await sb.from('auctions').select('*').eq('id', id).single()
+  const { data: auction } = await sb.from('auctions').select('*').eq('id', id).single()
     if (!auction) return reply.code(404).send({ error: 'Auction not found' })
     if (auction.sellerId !== userId) return reply.code(403).send({ error: 'Forbidden' })
+  if (auction.status !== 'ended') return reply.code(400).send({ error: 'Auction must be ended to make a decision' })
 
     const { data: topBid } = await sb
       .from('bids')
       .select('*')
       .eq('auctionId', id)
-      .order('createdAt', { ascending: false })
+      .order('amount', { ascending: false })
       .limit(1)
       .maybeSingle()
 
     if (!topBid) return reply.code(400).send({ error: 'No bids' })
 
-    if (decision === 'accept') {
+  if (decision === 'accept') {
   await notify(topBid.bidderId, 'bid_accepted', { auctionId: id, amount: topBid.amount })
       // Optional SMS
       const sadmin = SUPABASE_SERVICE_KEY ? createClient(SUPABASE_URL!, SUPABASE_SERVICE_KEY, { auth: { persistSession: false } }) : null
@@ -459,13 +460,15 @@ app.post('/api/auctions/:id/decision', async (request: any, reply: any) => {
         } catch {}
       }
       // Mark auction closed
-      if (AuctionModel) await AuctionModel.update({ status: 'closed' }, { where: { id } })
-      else await sb.from('auctions').update({ status: 'closed' }).eq('id', id)
+  if (AuctionModel) await AuctionModel.update({ status: 'closed' }, { where: { id } })
+  else await sb.from('auctions').update({ status: 'closed' }).eq('id', id)
+  broadcastMessage({ type: 'auction:closed', auctionId: id, reason: 'accepted' })
     } else {
       await notify(topBid.bidderId, 'bid_rejected', { auctionId: id, amount: topBid.amount })
       // Mark auction closed with no winner
-      if (AuctionModel) await AuctionModel.update({ status: 'closed' }, { where: { id } })
-      else await sb.from('auctions').update({ status: 'closed' }).eq('id', id)
+  if (AuctionModel) await AuctionModel.update({ status: 'closed' }, { where: { id } })
+  else await sb.from('auctions').update({ status: 'closed' }).eq('id', id)
+  broadcastMessage({ type: 'auction:closed', auctionId: id, reason: 'rejected' })
     }
 
     return { ok: true }
@@ -557,11 +560,13 @@ app.post('/api/counter-offers/:counterId/respond', async (request: any, reply: a
         // Close auction
         if (AuctionModel) await AuctionModel.update({ status: 'closed' }, { where: { id: co.auctionId } })
         else await sb.from('auctions').update({ status: 'closed' }).eq('id', co.auctionId)
+        broadcastMessage({ type: 'auction:closed', auctionId: co.auctionId, reason: 'counter_accepted' })
       }
     } else {
       // Rejected by buyer: close with no winner
       if (AuctionModel) await AuctionModel.update({ status: 'closed' }, { where: { id: co.auctionId } })
       else await sb.from('auctions').update({ status: 'closed' }).eq('id', co.auctionId)
+      broadcastMessage({ type: 'auction:closed', auctionId: co.auctionId, reason: 'counter_rejected' })
     }
     return { ok: true }
   } catch (error: any) {

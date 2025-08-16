@@ -306,7 +306,7 @@ app.post('/api/auctions/:id/bids', async (request, reply) => {
             auction = row.toJSON();
             if (auction.sellerId === userId)
                 return reply.code(403).send({ error: 'Sellers cannot bid on their own auction' });
-            const top = await BidModel.findOne({ where: { auctionId: id }, order: [['createdAt', 'DESC']] });
+            const top = await BidModel.findOne({ where: { auctionId: id }, order: [['amount', 'DESC']] });
             prevTopBidder = top ? top.get('bidderId') : null;
             const endsAt = new Date(auction.endsAt);
             if (now > endsAt || auction.status !== 'live')
@@ -360,7 +360,7 @@ app.post('/api/auctions/:id/bids', async (request, reply) => {
             const topRes = await sb
                 .from('bids').select('*')
                 .eq('auctionId', id)
-                .order('createdAt', { ascending: false })
+                .order('amount', { ascending: false })
                 .limit(1).maybeSingle();
             prevTopBidder = topRes.data ? topRes.data.bidderId : null;
             const { error: updateError } = await sb
@@ -432,11 +432,13 @@ app.post('/api/auctions/:id/decision', async (request, reply) => {
             return reply.code(404).send({ error: 'Auction not found' });
         if (auction.sellerId !== userId)
             return reply.code(403).send({ error: 'Forbidden' });
+        if (auction.status !== 'ended')
+            return reply.code(400).send({ error: 'Auction must be ended to make a decision' });
         const { data: topBid } = await sb
             .from('bids')
             .select('*')
             .eq('auctionId', id)
-            .order('createdAt', { ascending: false })
+            .order('amount', { ascending: false })
             .limit(1)
             .maybeSingle();
         if (!topBid)
@@ -459,6 +461,7 @@ app.post('/api/auctions/:id/decision', async (request, reply) => {
                 await AuctionModel.update({ status: 'closed' }, { where: { id } });
             else
                 await sb.from('auctions').update({ status: 'closed' }).eq('id', id);
+            broadcastMessage({ type: 'auction:closed', auctionId: id, reason: 'accepted' });
         }
         else {
             await notify(topBid.bidderId, 'bid_rejected', { auctionId: id, amount: topBid.amount });
@@ -467,6 +470,7 @@ app.post('/api/auctions/:id/decision', async (request, reply) => {
                 await AuctionModel.update({ status: 'closed' }, { where: { id } });
             else
                 await sb.from('auctions').update({ status: 'closed' }).eq('id', id);
+            broadcastMessage({ type: 'auction:closed', auctionId: id, reason: 'rejected' });
         }
         return { ok: true };
     }
@@ -567,6 +571,7 @@ app.post('/api/counter-offers/:counterId/respond', async (request, reply) => {
                     await AuctionModel.update({ status: 'closed' }, { where: { id: co.auctionId } });
                 else
                     await sb.from('auctions').update({ status: 'closed' }).eq('id', co.auctionId);
+                broadcastMessage({ type: 'auction:closed', auctionId: co.auctionId, reason: 'counter_accepted' });
             }
         }
         else {
@@ -575,6 +580,7 @@ app.post('/api/counter-offers/:counterId/respond', async (request, reply) => {
                 await AuctionModel.update({ status: 'closed' }, { where: { id: co.auctionId } });
             else
                 await sb.from('auctions').update({ status: 'closed' }).eq('id', co.auctionId);
+            broadcastMessage({ type: 'auction:closed', auctionId: co.auctionId, reason: 'counter_rejected' });
         }
         return { ok: true };
     }

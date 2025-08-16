@@ -712,6 +712,8 @@ export function App() {
         setAuctions(prev => prev.map(a => a.id === message.auctionId ? { ...a, status: 'live' } : a))
       } else if (message.type === 'auction:ended') {
         setAuctions(prev => prev.map(a => a.id === message.auctionId ? { ...a, status: 'ended' } : a))
+      } else if (message.type === 'auction:closed') {
+        setAuctions(prev => prev.map(a => a.id === message.auctionId ? { ...a, status: 'closed' } : a))
       } else if (message.type === 'notification' && user && message.userId === user.id) {
         setNotifications(prev => [{ type: message.payload?.type || 'info', payload: message.payload, createdAt: message.ts, read: false }, ...prev])
       }
