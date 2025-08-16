@@ -19,6 +19,8 @@ declare module '@upstash/redis' {
     del?(key: string): Promise<any>
   }
 }
+ 
+declare module 'pdfkit'
 
 declare module 'sequelize' {
   export const DataTypes: any

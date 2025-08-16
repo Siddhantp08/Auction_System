@@ -9,6 +9,7 @@ import fastifyStatic from '@fastify/static';
 import { fileURLToPath } from 'url';
 import { join, dirname } from 'path';
 import fs from 'fs';
+import { sendEmail, buildInvoiceHtml, buildInvoicePdf } from './email.js';
 // Environment configuration
 const PORT = Number(process.env.PORT || 8080);
 const SUPABASE_URL = process.env.SUPABASE_URL;
@@ -352,6 +353,8 @@ app.post('/api/auctions/:id/decision', async (request, reply) => {
             return reply.code(400).send({ error: 'No bids' });
         if (decision === 'accept') {
             await notify(topBid.bidderId, 'bid_accepted', { auctionId: id, amount: topBid.amount });
+            // Email confirmations + invoice
+            await sendTransactionEmailsAndInvoice(auction, topBid.bidderId, topBid.amount);
         }
         else {
             await notify(topBid.bidderId, 'bid_rejected', { auctionId: id, amount: topBid.amount });
@@ -430,6 +433,13 @@ app.post('/api/counter-offers/:counterId/respond', async (request, reply) => {
             throw error;
         await notify(co.sellerId, `counter_${status}`, { counterOfferId: counterId, auctionId: co.auctionId, amount: co.amount });
         await notify(co.buyerId, `counter_${status}`, { counterOfferId: counterId, auctionId: co.auctionId, amount: co.amount });
+        if (status === 'accepted') {
+            // On accepted counter, send emails and invoice
+            const { data: auction } = await sb.from('auctions').select('*').eq('id', co.auctionId).single();
+            if (auction) {
+                await sendTransactionEmailsAndInvoice(auction, co.buyerId, co.amount);
+            }
+        }
         return { ok: true };
     }
     catch (error) {
@@ -617,4 +627,44 @@ if (supabase) {
             app.log.error(`Failed to end expired auctions: ${String(error?.message || error)}`);
         }
     }, 30000); // Check every 30 seconds
+}
+// Helpers
+async function sendTransactionEmailsAndInvoice(auction, buyerId, amount) {
+    try {
+        if (!SUPABASE_URL || !(SUPABASE_ANON_KEY || SUPABASE_SERVICE_KEY))
+            return;
+        // Fetch buyer and seller emails via auth API; requires service role or admin rights
+        const sadmin = SUPABASE_SERVICE_KEY ? createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY, { auth: { persistSession: false } }) : null;
+        let buyerEmail = '';
+        let sellerEmail = '';
+        if (sadmin) {
+            try {
+                const b = await sadmin.auth.admin.getUserById(buyerId);
+                buyerEmail = b.data.user?.email || '';
+            }
+            catch { }
+            try {
+                const sel = await sadmin.auth.admin.getUserById(auction.sellerId);
+                sellerEmail = sel.data.user?.email || '';
+            }
+            catch { }
+        }
+        const html = buildInvoiceHtml({ auctionTitle: auction.title, amount, buyerEmail, sellerEmail, auctionId: auction.id });
+        const pdfBase64 = await buildInvoicePdf({ auctionTitle: auction.title, amount, buyerEmail, sellerEmail, auctionId: auction.id });
+        if (buyerEmail) {
+            await sendEmail(buyerEmail, 'Transaction Confirmation', 'Your transaction is confirmed.', {
+                html,
+                attachments: pdfBase64 ? [{ filename: `invoice-${auction.id}.pdf`, content: pdfBase64, type: 'application/pdf' }] : undefined
+            });
+        }
+        if (sellerEmail) {
+            await sendEmail(sellerEmail, 'Transaction Confirmation', 'Your transaction is confirmed.', {
+                html,
+                attachments: pdfBase64 ? [{ filename: `invoice-${auction.id}.pdf`, content: pdfBase64, type: 'application/pdf' }] : undefined
+            });
+        }
+    }
+    catch {
+        // ignore email failures
+    }
 }
