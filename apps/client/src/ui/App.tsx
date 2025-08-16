@@ -23,6 +23,7 @@ interface Auction {
   startingPrice: number
   bidIncrement: number
   status: string
+  goLiveAt: string
   endsAt: string
   sellerId: string
 }
@@ -177,10 +178,14 @@ function AuctionCard({ auction, onBid, user }: {
 
   useEffect(() => {
     const timer = setInterval(() => {
-      setTimeLeft(formatTime(auction.endsAt))
+      if (auction.status === 'live') {
+        setTimeLeft(formatTime(auction.endsAt))
+      } else {
+        setTimeLeft(formatTime(auction.goLiveAt))
+      }
     }, 1000)
     return () => clearInterval(timer)
-  }, [auction.endsAt])
+  }, [auction.endsAt, auction.goLiveAt, auction.status])
 
   const handleBid = () => {
     const amount = parseFloat(bidAmount)
@@ -206,11 +211,17 @@ function AuctionCard({ auction, onBid, user }: {
           <span className="font-bold text-lg">{formatCurrency(auction.currentPrice)}</span>
         </div>
         <div className="flex justify-between">
-          <span className="text-gray-600">Time Left:</span>
+          <span className="text-gray-600">{isActive ? 'Time Left:' : 'Starts In:'}</span>
           <span className={`font-medium ${timeLeft === 'Ended' ? 'text-red-600' : 'text-green-600'}`}>
             {timeLeft}
           </span>
         </div>
+        {!isActive && (
+          <div className="flex justify-between">
+            <span className="text-gray-600">Starts At:</span>
+            <span className="font-medium">{new Date(auction.goLiveAt).toLocaleString()}</span>
+          </div>
+        )}
         <div className="flex justify-between">
           <span className="text-gray-600">Status:</span>
           <span className={`px-2 py-1 rounded text-sm ${
@@ -321,17 +332,25 @@ function CreateAuctionForm({ onSubmit, onCancel }: {
     startingPrice: '',
     bidIncrement: '1',
   durationMinutes: '60',
-  startNow: true
+  startNow: true,
+  goLiveAtLocal: ''
   })
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
-    const goLiveAt = formData.startNow
-      ? new Date().toISOString() // Start immediately
-      : new Date(Date.now() + 60000).toISOString() // Start in 1 minute
+    let goLiveAt: string
+    if (formData.startNow) {
+      goLiveAt = new Date().toISOString()
+    } else if (formData.goLiveAtLocal) {
+      const dt = new Date(formData.goLiveAtLocal)
+      goLiveAt = isNaN(dt.getTime()) ? new Date(Date.now() + 60000).toISOString() : dt.toISOString()
+    } else {
+      goLiveAt = new Date(Date.now() + 60000).toISOString()
+    }
     onSubmit({
       ...formData,
       startNow: undefined,
+      goLiveAtLocal: undefined,
       startingPrice: parseFloat(formData.startingPrice),
       bidIncrement: parseFloat(formData.bidIncrement),
       durationMinutes: parseInt(formData.durationMinutes),
@@ -353,6 +372,19 @@ function CreateAuctionForm({ onSubmit, onCancel }: {
             />
             <label htmlFor="startNow" className="text-sm text-gray-700">Start auction immediately</label>
           </div>
+          {!formData.startNow && (
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Go live at</label>
+              <input
+                type="datetime-local"
+                value={formData.goLiveAtLocal}
+                onChange={(e) => setFormData({ ...formData, goLiveAtLocal: e.target.value })}
+                aria-label="Go live at"
+                className="w-full px-3 py-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+              <p className="text-xs text-gray-500 mt-1">Leave empty to default to 1 minute from now.</p>
+            </div>
+          )}
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">
               Title
