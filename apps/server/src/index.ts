@@ -77,6 +77,18 @@ const PlaceBidSchema = z.object({
   amount: z.number().min(0)
 })
 
+function devMode() {
+  return process.env.NODE_ENV !== 'production' || process.env.ALLOW_DEV_HEADER === 'true'
+}
+function formatDbError(err: any) {
+  const e = err || {}
+  return {
+    message: e.message || String(e),
+    code: e.code,
+    details: e.details || e.hint || undefined
+  }
+}
+
 // Authentication helper
 async function getUserFromRequest(request: any): Promise<string | null> {
   const authHeader = request.headers.authorization as string | undefined
@@ -223,8 +235,8 @@ app.post('/api/auctions', async (request: any, reply: any) => {
     if (error instanceof z.ZodError) {
       return reply.code(400).send({ error: 'Invalid input', details: (error as z.ZodError).errors })
     }
-    app.log.error(`Failed to create auction: ${String((error as any)?.message || error)}`)
-    return reply.code(500).send({ error: 'Failed to create auction' })
+  app.log.error(`Failed to create auction: ${String((error as any)?.message || error)}`)
+  return reply.code(500).send({ error: 'Failed to create auction', ...(devMode() ? { db: formatDbError(error) } : {}) })
   }
 })
 
@@ -313,8 +325,8 @@ app.post('/api/auctions/:id/bids', async (request: any, reply: any) => {
     if (error instanceof z.ZodError) {
       return reply.code(400).send({ error: 'Invalid input', details: (error as z.ZodError).errors })
     }
-    app.log.error(`Failed to place bid: ${String((error as any)?.message || error)}`)
-    return reply.code(500).send({ error: 'Failed to place bid' })
+  app.log.error(`Failed to place bid: ${String((error as any)?.message || error)}`)
+  return reply.code(500).send({ error: 'Failed to place bid', ...(devMode() ? { db: formatDbError(error) } : {}) })
   }
 })
 

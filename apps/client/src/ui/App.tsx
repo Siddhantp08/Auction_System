@@ -390,7 +390,16 @@ export function App() {
     })
 
     if (!response.ok) {
-      throw new Error(`API Error: ${response.statusText}`)
+      let msg = `API Error: ${response.status} ${response.statusText}`
+      try {
+        const err = await response.json()
+        if (err?.error) msg = `${err.error}`
+        if (err?.db?.message) msg += ` — ${err.db.message}`
+        if (err?.db?.code) msg += ` [${err.db.code}]`
+      } catch {
+        // ignore
+      }
+      throw new Error(msg)
     }
 
     return response.json()
