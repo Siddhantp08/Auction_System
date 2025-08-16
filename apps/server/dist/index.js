@@ -9,12 +9,16 @@ import fastifyStatic from '@fastify/static';
 import { fileURLToPath } from 'url';
 import { join, dirname } from 'path';
 import fs from 'fs';
-import { sendEmail, buildInvoiceHtml, buildInvoicePdf } from './email.js';
+import { initModels, AuctionModel, BidModel } from './sequelize.js';
+import { sendSms } from './sms.js';
 // Environment configuration
 const PORT = Number(process.env.PORT || 8080);
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_KEY;
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY;
+const UPSTASH_URL = process.env.UPSTASH_REDIS_REST_URL;
+const UPSTASH_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN;
+const ADMIN_USER_IDS = (process.env.ADMIN_USER_IDS || '').split(',').map(s => s.trim()).filter(Boolean);
 // Initialize Supabase client
 const supabase = SUPABASE_URL && SUPABASE_SERVICE_KEY
     ? createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY, {
@@ -136,6 +140,29 @@ async function notify(userId, type, payload) {
         }
     }
 }
+let redis = null;
+async function getRedis() {
+    if (redis !== null)
+        return redis;
+    if (!UPSTASH_URL || !UPSTASH_TOKEN) {
+        redis = null;
+        return null;
+    }
+    try {
+        const mod = await import('@upstash/redis');
+        redis = new mod.Redis({ url: UPSTASH_URL, token: UPSTASH_TOKEN });
+        return redis;
+    }
+    catch {
+        redis = null;
+        return null;
+    }
+}
+function isAdmin(userId) {
+    return !!(userId && ADMIN_USER_IDS.includes(userId));
+}
+// Initialize ORM models if configured
+await initModels();
 // Routes
 app.get('/health', async () => {
     return { status: 'ok', timestamp: new Date().toISOString() };
@@ -204,33 +231,48 @@ app.post('/api/auctions', async (request, reply) => {
         const goLiveAt = new Date(validatedData.goLiveAt);
         const endsAt = new Date(goLiveAt.getTime() + validatedData.durationMinutes * 60 * 1000);
         const now = new Date();
-        const auctionData = {
-            id: nanoid(),
-            sellerId: userId,
-            title: validatedData.title,
-            description: validatedData.description || null,
-            startingPrice: validatedData.startingPrice,
-            currentPrice: validatedData.startingPrice,
-            bidIncrement: validatedData.bidIncrement,
-            goLiveAt: goLiveAt.toISOString(),
-            endsAt: endsAt.toISOString(),
-            status: now >= goLiveAt ? 'live' : 'scheduled',
-            createdAt: now.toISOString(),
-            updatedAt: now.toISOString()
-        };
-        const { data, error } = await sb
-            .from('auctions')
-            .insert(auctionData)
-            .select()
-            .single();
-        if (error)
-            throw error;
-        // Broadcast new auction
-        broadcastMessage({
-            type: 'auction:created',
-            auction: data
-        });
-        return reply.code(201).send(data);
+        if (AuctionModel) {
+            const row = await AuctionModel.create({
+                id: nanoid(),
+                sellerId: userId,
+                title: validatedData.title,
+                description: validatedData.description || null,
+                startingPrice: validatedData.startingPrice,
+                currentPrice: validatedData.startingPrice,
+                bidIncrement: validatedData.bidIncrement,
+                goLiveAt,
+                endsAt,
+                status: now >= goLiveAt ? 'live' : 'scheduled',
+            });
+            const data = row.toJSON();
+            broadcastMessage({ type: 'auction:created', auction: data });
+            return reply.code(201).send(data);
+        }
+        else {
+            const auctionData = {
+                id: nanoid(),
+                sellerId: userId,
+                title: validatedData.title,
+                description: validatedData.description || null,
+                startingPrice: validatedData.startingPrice,
+                currentPrice: validatedData.startingPrice,
+                bidIncrement: validatedData.bidIncrement,
+                goLiveAt: goLiveAt.toISOString(),
+                endsAt: endsAt.toISOString(),
+                status: now >= goLiveAt ? 'live' : 'scheduled',
+                createdAt: now.toISOString(),
+                updatedAt: now.toISOString()
+            };
+            const { data, error } = await sb
+                .from('auctions')
+                .insert(auctionData)
+                .select()
+                .single();
+            if (error)
+                throw error;
+            broadcastMessage({ type: 'auction:created', auction: data });
+            return reply.code(201).send(data);
+        }
     }
     catch (error) {
         if (error instanceof z.ZodError) {
@@ -253,52 +295,89 @@ app.post('/api/auctions/:id/bids', async (request, reply) => {
     const { id } = request.params;
     try {
         const { amount } = PlaceBidSchema.parse(request.body);
-        // Get current auction state
-        const { data: auction, error: auctionError } = await sb
-            .from('auctions')
-            .select('*')
-            .eq('id', id)
-            .single();
-        if (auctionError || !auction) {
-            return reply.code(404).send({ error: 'Auction not found' });
-        }
-        // Validate bid
         const now = new Date();
-        const endsAt = new Date(auction.endsAt);
-        if (now > endsAt || auction.status !== 'live') {
-            return reply.code(400).send({ error: 'Auction is not active' });
+        // Load auction and previous top bid
+        let auction;
+        let prevTopBidder = null;
+        if (AuctionModel && BidModel) {
+            const row = await AuctionModel.findOne({ where: { id } });
+            if (!row)
+                return reply.code(404).send({ error: 'Auction not found' });
+            auction = row.toJSON();
+            const top = await BidModel.findOne({ where: { auctionId: id }, order: [['createdAt', 'DESC']] });
+            prevTopBidder = top ? top.get('bidderId') : null;
+            const endsAt = new Date(auction.endsAt);
+            if (now > endsAt || auction.status !== 'live')
+                return reply.code(400).send({ error: 'Auction is not active' });
+            const minBid = Number(auction.currentPrice) + Number(auction.bidIncrement);
+            if (amount < minBid)
+                return reply.code(400).send({ error: `Minimum bid is ${minBid.toFixed(2)}` });
+            // Optional Redis lock + check
+            const r = await getRedis();
+            const lockKey = `lock:auction:${id}`;
+            let locked = false;
+            if (r) {
+                try {
+                    locked = !!(await r.set(lockKey, userId, { nx: true, ex: 5 }));
+                }
+                catch { }
+            }
+            try {
+                await AuctionModel.update({ currentPrice: amount }, { where: { id } });
+                await BidModel.create({ id: nanoid(), auctionId: id, bidderId: userId, amount, createdAt: now });
+                if (r) {
+                    try {
+                        await r.hset(`auction:${id}`, { currentPrice: amount, bidderId: userId });
+                    }
+                    catch { }
+                }
+            }
+            finally {
+                if (locked && r && r.del) {
+                    try {
+                        await r.del(lockKey);
+                    }
+                    catch { }
+                }
+            }
         }
-        if (amount <= auction.currentPrice) {
-            return reply.code(400).send({ error: 'Bid must be higher than current price' });
+        else {
+            const res = await sb.from('auctions').select('*').eq('id', id).single();
+            if (res.error || !res.data)
+                return reply.code(404).send({ error: 'Auction not found' });
+            auction = res.data;
+            const endsAt = new Date(auction.endsAt);
+            if (now > endsAt || auction.status !== 'live')
+                return reply.code(400).send({ error: 'Auction is not active' });
+            const minBid = Number(auction.currentPrice) + Number(auction.bidIncrement);
+            if (amount < minBid)
+                return reply.code(400).send({ error: `Minimum bid is ${minBid.toFixed(2)}` });
+            // Previous top bidder
+            const topRes = await sb
+                .from('bids').select('*')
+                .eq('auctionId', id)
+                .order('createdAt', { ascending: false })
+                .limit(1).maybeSingle();
+            prevTopBidder = topRes.data ? topRes.data.bidderId : null;
+            const { error: updateError } = await sb
+                .from('auctions')
+                .update({ currentPrice: amount, updatedAt: now.toISOString() })
+                .eq('id', id);
+            if (updateError)
+                throw updateError;
+            const { error: bidError } = await sb
+                .from('bids')
+                .insert({ id: nanoid(), auctionId: id, bidderId: userId, amount, createdAt: now.toISOString() });
+            if (bidError)
+                throw bidError;
+            const r = await getRedis();
+            if (r) {
+                try {
+                    await r.hset(`auction:${id}`, { currentPrice: amount, bidderId: userId });
+                }
+                catch { }
+            }
         }
-        const minBid = auction.currentPrice + auction.bidIncrement;
-        if (amount < minBid) {
-            return reply.code(400).send({
-                error: `Minimum bid is ${minBid.toFixed(2)}`
-            });
-        }
-        // Update auction with new bid
-        const { error: updateError } = await sb
-            .from('auctions')
-            .update({
-            currentPrice: amount,
-            updatedAt: now.toISOString()
-        })
-            .eq('id', id);
-        if (updateError)
-            throw updateError;
-        // Record the bid
-        const { error: bidError } = await sb
-            .from('bids')
-            .insert({
-            id: nanoid(),
-            auctionId: id,
-            bidderId: userId,
-            amount: amount,
-            createdAt: now.toISOString()
-        });
-        if (bidError)
-            throw bidError;
         // Broadcast bid update
         broadcastMessage({
             type: 'bid:accepted',
@@ -314,6 +393,13 @@ app.post('/api/auctions/:id/bids', async (request, reply) => {
             }
         }
         catch { }
+        // Notify previous highest bidder they were outbid
+        if (prevTopBidder && prevTopBidder !== userId) {
+            try {
+                await notify(prevTopBidder, 'outbid', { auctionId: id, amount, by: userId });
+            }
+            catch { }
+        }
         return { success: true };
     }
     catch (error) {
@@ -353,11 +439,30 @@ app.post('/api/auctions/:id/decision', async (request, reply) => {
             return reply.code(400).send({ error: 'No bids' });
         if (decision === 'accept') {
             await notify(topBid.bidderId, 'bid_accepted', { auctionId: id, amount: topBid.amount });
-            // Email confirmations + invoice
-            await sendTransactionEmailsAndInvoice(auction, topBid.bidderId, topBid.amount);
+            // Optional SMS
+            const sadmin = SUPABASE_SERVICE_KEY ? createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY, { auth: { persistSession: false } }) : null;
+            if (sadmin) {
+                try {
+                    const b = await sadmin.auth.admin.getUserById(topBid.bidderId);
+                    const phone = b.data.user?.phone || '';
+                    if (phone)
+                        await sendSms(phone, `Your bid on ${auction.title} was accepted. Amount: $${Number(topBid.amount).toFixed(2)}`);
+                }
+                catch { }
+            }
+            // Mark auction closed
+            if (AuctionModel)
+                await AuctionModel.update({ status: 'closed' }, { where: { id } });
+            else
+                await sb.from('auctions').update({ status: 'closed' }).eq('id', id);
         }
         else {
             await notify(topBid.bidderId, 'bid_rejected', { auctionId: id, amount: topBid.amount });
+            // Mark auction closed with no winner
+            if (AuctionModel)
+                await AuctionModel.update({ status: 'closed' }, { where: { id } });
+            else
+                await sb.from('auctions').update({ status: 'closed' }).eq('id', id);
         }
         return { ok: true };
     }
@@ -437,8 +542,35 @@ app.post('/api/counter-offers/:counterId/respond', async (request, reply) => {
             // On accepted counter, send emails and invoice
             const { data: auction } = await sb.from('auctions').select('*').eq('id', co.auctionId).single();
             if (auction) {
-                await sendTransactionEmailsAndInvoice(auction, co.buyerId, co.amount);
+                // Emails disabled
+                // Optional SMS
+                const sadmin = SUPABASE_SERVICE_KEY ? createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY, { auth: { persistSession: false } }) : null;
+                if (sadmin) {
+                    try {
+                        const b = await sadmin.auth.admin.getUserById(co.buyerId);
+                        const s = await sadmin.auth.admin.getUserById(co.sellerId);
+                        const phoneB = b.data.user?.phone || '';
+                        const phoneS = s.data.user?.phone || '';
+                        if (phoneB)
+                            await sendSms(phoneB, `Counter-offer accepted for ${auction.title}. Amount: $${Number(co.amount).toFixed(2)}`);
+                        if (phoneS)
+                            await sendSms(phoneS, `Counter-offer accepted for ${auction.title}. Amount: $${Number(co.amount).toFixed(2)}`);
+                    }
+                    catch { }
+                }
+                // Close auction
+                if (AuctionModel)
+                    await AuctionModel.update({ status: 'closed' }, { where: { id: co.auctionId } });
+                else
+                    await sb.from('auctions').update({ status: 'closed' }).eq('id', co.auctionId);
             }
+        }
+        else {
+            // Rejected by buyer: close with no winner
+            if (AuctionModel)
+                await AuctionModel.update({ status: 'closed' }, { where: { id: co.auctionId } });
+            else
+                await sb.from('auctions').update({ status: 'closed' }).eq('id', co.auctionId);
         }
         return { ok: true };
     }
@@ -628,43 +760,4 @@ if (supabase) {
         }
     }, 30000); // Check every 30 seconds
 }
-// Helpers
-async function sendTransactionEmailsAndInvoice(auction, buyerId, amount) {
-    try {
-        if (!SUPABASE_URL || !(SUPABASE_ANON_KEY || SUPABASE_SERVICE_KEY))
-            return;
-        // Fetch buyer and seller emails via auth API; requires service role or admin rights
-        const sadmin = SUPABASE_SERVICE_KEY ? createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY, { auth: { persistSession: false } }) : null;
-        let buyerEmail = '';
-        let sellerEmail = '';
-        if (sadmin) {
-            try {
-                const b = await sadmin.auth.admin.getUserById(buyerId);
-                buyerEmail = b.data.user?.email || '';
-            }
-            catch { }
-            try {
-                const sel = await sadmin.auth.admin.getUserById(auction.sellerId);
-                sellerEmail = sel.data.user?.email || '';
-            }
-            catch { }
-        }
-        const html = buildInvoiceHtml({ auctionTitle: auction.title, amount, buyerEmail, sellerEmail, auctionId: auction.id });
-        const pdfBase64 = await buildInvoicePdf({ auctionTitle: auction.title, amount, buyerEmail, sellerEmail, auctionId: auction.id });
-        if (buyerEmail) {
-            await sendEmail(buyerEmail, 'Transaction Confirmation', 'Your transaction is confirmed.', {
-                html,
-                attachments: pdfBase64 ? [{ filename: `invoice-${auction.id}.pdf`, content: pdfBase64, type: 'application/pdf' }] : undefined
-            });
-        }
-        if (sellerEmail) {
-            await sendEmail(sellerEmail, 'Transaction Confirmation', 'Your transaction is confirmed.', {
-                html,
-                attachments: pdfBase64 ? [{ filename: `invoice-${auction.id}.pdf`, content: pdfBase64, type: 'application/pdf' }] : undefined
-            });
-        }
-    }
-    catch {
-        // ignore email failures
-    }
-}
+// Helpers (emails removed)
