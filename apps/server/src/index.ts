@@ -448,8 +448,9 @@ app.post('/api/auctions/:id/decision', async (request: any, reply: any) => {
 
     if (!topBid) return reply.code(400).send({ error: 'No bids' })
 
-  if (decision === 'accept') {
+    if (decision === 'accept') {
   await notify(topBid.bidderId, 'bid_accepted', { auctionId: id, amount: topBid.amount })
+      await notify(auction.sellerId, 'auction_closed', { auctionId: id, reason: 'accepted', amount: topBid.amount, winnerId: topBid.bidderId })
       // Optional SMS
       const sadmin = SUPABASE_SERVICE_KEY ? createClient(SUPABASE_URL!, SUPABASE_SERVICE_KEY, { auth: { persistSession: false } }) : null
       if (sadmin) {
@@ -472,6 +473,7 @@ app.post('/api/auctions/:id/decision', async (request: any, reply: any) => {
   broadcastMessage({ type: 'auction:closed', auctionId: id, reason: 'accepted' })
     } else {
       await notify(topBid.bidderId, 'bid_rejected', { auctionId: id, amount: topBid.amount })
+  await notify(auction.sellerId, 'auction_closed', { auctionId: id, reason: 'rejected' })
       // Mark auction closed with no winner
       if (AuctionModel) {
         await AuctionModel.update({ status: 'closed' }, { where: { id } })
@@ -487,10 +489,13 @@ app.post('/api/auctions/:id/decision', async (request: any, reply: any) => {
 
     return { ok: true }
   } catch (error: any) {
+    app.log.error(`Decision failed: ${String((error as any)?.message || error)}`)
     if (error instanceof z.ZodError) {
       return reply.code(400).send({ error: 'Invalid input', details: (error as z.ZodError).errors })
     }
-    return reply.code(400).send({ error: 'Invalid request' })
+    return reply
+      .code(500)
+      .send({ error: 'Failed to process decision', ...(devMode() ? { db: formatDbError(error) } : {}) })
   }
 })
 
@@ -526,10 +531,11 @@ app.post('/api/auctions/:id/counter-offers', async (request: any, reply: any) =>
     await notify(topBid.bidderId, 'counter_offer', { auctionId: id, amount, counterOfferId: row.id })
     return { ok: true, id: row.id }
   } catch (error: any) {
+    app.log.error(`Counter-offer creation failed: ${String((error as any)?.message || error)}`)
     if (error instanceof z.ZodError) {
       return reply.code(400).send({ error: 'Invalid input', details: (error as z.ZodError).errors })
     }
-    return reply.code(400).send({ error: 'Invalid request' })
+    return reply.code(500).send({ error: 'Failed to create counter-offer', ...(devMode() ? { db: formatDbError(error) } : {}) })
   }
 })
 
@@ -598,10 +604,11 @@ app.post('/api/counter-offers/:counterId/respond', async (request: any, reply: a
     }
     return { ok: true }
   } catch (error: any) {
+    app.log.error(`Counter-offer response failed: ${String((error as any)?.message || error)}`)
     if (error instanceof z.ZodError) {
       return reply.code(400).send({ error: 'Invalid input', details: (error as z.ZodError).errors })
     }
-    return reply.code(400).send({ error: 'Invalid request' })
+    return reply.code(500).send({ error: 'Failed to respond to counter-offer', ...(devMode() ? { db: formatDbError(error) } : {}) })
   }
 })
 

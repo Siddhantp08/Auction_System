@@ -906,6 +906,11 @@ function renderNotificationText(n: NotificationItem) {
       return `Your bid was accepted on auction ${p.auctionId} for $${Number(p.amount).toFixed(2)}`
     case 'bid_rejected':
       return `Your bid was rejected on auction ${p.auctionId}`
+    case 'auction_closed':
+      if (p.reason === 'accepted') {
+        return `Auction ${p.auctionId} closed with winner ${p.winnerId} at $${Number(p.amount).toFixed(2)}`
+      }
+      return `Auction ${p.auctionId} closed with no winner`
     case 'counter_offer':
       return `Counter offer: $${Number(p.amount).toFixed(2)} on auction ${p.auctionId}`
     case 'counter_accepted':
