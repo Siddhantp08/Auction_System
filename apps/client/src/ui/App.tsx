@@ -189,7 +189,8 @@ function AuctionCard({ auction, onBid, user }: {
 
   const handleBid = () => {
     const amount = parseFloat(bidAmount)
-    if (amount > auction.currentPrice) {
+  const minBid = auction.currentPrice + auction.bidIncrement
+  if (amount >= minBid) {
       onBid(auction.id, amount)
       setBidAmount('')
     }
@@ -255,8 +256,8 @@ function AuctionCard({ auction, onBid, user }: {
         </div>
       )}
 
-      {/* Seller actions when auction ended */}
-      {user && user.id === auction.sellerId && auction.status !== 'live' && (
+  {/* Seller actions when auction ended */}
+  {user && user.id === auction.sellerId && auction.status === 'ended' && (
         <SellerActions auctionId={auction.id} />
       )}
     </div>
@@ -265,6 +266,10 @@ function AuctionCard({ auction, onBid, user }: {
 
 function SellerActions({ auctionId }: { auctionId: string }) {
   const [amount, setAmount] = useState('')
+  const [topBid, setTopBid] = useState<{ amount: number; userId?: string; email?: string } | null>(
+    null
+  )
+  const [loadingTop, setLoadingTop] = useState(false)
 
   const decision = async (d: 'accept' | 'reject') => {
     try {
@@ -300,8 +305,52 @@ function SellerActions({ auctionId }: { auctionId: string }) {
   ) => Promise<any>
   const apiCall: ApiCall = (window as any)._appApiCall
 
+  const loadTopBid = async () => {
+    setLoadingTop(true)
+    try {
+      const data = await apiCall(`/api/auctions/${auctionId}/bids`)
+      const items = Array.isArray(data?.items) ? data.items : Array.isArray(data) ? data : []
+      const sorted = [...items].sort((a, b) => Number(b?.amount || 0) - Number(a?.amount || 0))
+      const top = sorted[0]
+      if (top) {
+        setTopBid({
+          amount: Number(top.amount),
+          userId: top.userId || top.bidderId || top.buyerId,
+          email: top.email || top.bidderEmail || top.buyerEmail,
+        })
+      } else {
+        setTopBid(null)
+      }
+    } catch {
+      // ignore
+    } finally {
+      setLoadingTop(false)
+    }
+  }
+
+  useEffect(() => {
+    loadTopBid()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [auctionId])
+
   return (
     <div className="border-t pt-4 mt-4 space-y-2">
+      <div className="p-3 bg-gray-50 rounded border">
+        <div className="flex justify-between items-center mb-2">
+          <div className="font-medium">Highest Bid</div>
+          <button onClick={loadTopBid} className="text-xs text-blue-600 hover:underline">Refresh</button>
+        </div>
+        {loadingTop ? (
+          <div className="text-sm text-gray-600">Loading...</div>
+        ) : topBid ? (
+          <div className="space-y-1 text-sm">
+            <div className="flex justify-between"><span>Amount</span><span className="font-semibold">{formatCurrency(topBid.amount)}</span></div>
+            <div className="flex justify-between"><span>Bidder</span><span className="font-mono">{topBid.email || topBid.userId || 'Unknown'}</span></div>
+          </div>
+        ) : (
+          <div className="text-sm text-gray-600">No bids placed.</div>
+        )}
+      </div>
       <div className="flex gap-2">
         <button onClick={() => decision('accept')} className="px-3 py-2 bg-green-600 text-white rounded hover:bg-green-700">Accept Top Bid</button>
         <button onClick={() => decision('reject')} className="px-3 py-2 bg-red-600 text-white rounded hover:bg-red-700">Reject Top Bid</button>
@@ -659,6 +708,8 @@ export function App() {
             ? { ...auction, currentPrice: message.amount }
             : auction
         ))
+      } else if (message.type === 'auction:live') {
+        setAuctions(prev => prev.map(a => a.id === message.auctionId ? { ...a, status: 'live' } : a))
       } else if (message.type === 'auction:ended') {
         setAuctions(prev => prev.map(a => a.id === message.auctionId ? { ...a, status: 'ended' } : a))
       } else if (message.type === 'notification' && user && message.userId === user.id) {
